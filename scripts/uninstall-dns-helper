@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ -x /usr/local/libexec/omarchy-tailscale-plus-dns ]]; then
+  sudo /usr/local/libexec/omarchy-tailscale-plus-dns off _ tailscale0 || true
+fi
 sudo rm -f /etc/sudoers.d/omarchy-tailscale-plus-dns
 sudo rm -f /usr/local/libexec/omarchy-tailscale-plus-dns
 echo "Removed the Tailscale Plus DNS helper and sudo rule."

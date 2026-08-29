@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "hehh2001.tailscale-plus",
   "name": "Tailscale Plus",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "hehh2001",
   "license": "MIT",
   "description": "A full-featured, native Omarchy control panel for Tailscale.",
@@ -53,8 +53,5 @@
         "defaultValue": "/usr/local/libexec/omarchy-tailscale-plus-dns"
       }
     ]
-  },
-  "omarchy": {
-    "clonedFrom": "omarchy.tailscale"
   }
 }

@@ -52,10 +52,13 @@ Item {
   property bool reportPosture: false
   property string hostname: ""
   property string operatorUser: ""
+  property string controlUrl: ""
   property bool exitNodeActive: false
   property string changingSetting: ""
   readonly property bool manageExitNodeDns: setting("manageExitNodeDns", false) === true
-  readonly property string exitNodeDns: String(setting("exitNodeDns", "") || "").trim()
+  readonly property string configuredLoginServer: Model.normalizeControlUrl(setting("loginServer", "https://controlplane.tailscale.com"))
+  readonly property string exitNodeDnsMap: String(setting("exitNodeDnsMap", "{}") || "{}")
+  readonly property string exitNodeDns: Model.dnsForControlUrl(exitNodeDnsMap, controlUrl, setting("exitNodeDns", ""))
   readonly property string dnsHelper: String(setting("dnsHelper", "/usr/local/libexec/omarchy-tailscale-plus-dns") || "")
 
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 30, 5, 3600)
@@ -323,6 +326,7 @@ Item {
     reportPosture = parsed.reportPosture
     hostname = parsed.hostname
     operatorUser = parsed.operatorUser
+    controlUrl = parsed.controlUrl
     exitNodeActive = parsed.exitNodeActive
   }
 
@@ -345,6 +349,36 @@ Item {
   function toggleUpdateCheck() { setBooleanPreference("updateCheck", "update-check", !updateCheck) }
   function toggleAutoUpdate() { setBooleanPreference("autoUpdate", "auto-update", !autoUpdate) }
   function toggleReportPosture() { setBooleanPreference("reportPosture", "report-posture", !reportPosture) }
+  function normalizeControlUrl(value) { return Model.normalizeControlUrl(value) }
+  function isValidControlUrl(value) { return Model.isValidControlUrl(value) }
+  function isValidDnsAddress(value) { return Model.isValidDnsAddress(value) }
+
+  function loginToServer(value) {
+    var server = Model.normalizeControlUrl(value)
+    if (!installed || loginProcess.running) return false
+    if (!Model.isValidControlUrl(server)) {
+      lastError = "Login server must be a valid http:// or https:// URL"
+      actionStatus = lastError
+      actionStatusTimer.restart()
+      return false
+    }
+    _loginOutput = ""
+    _loginError = ""
+    _loginInProgress = true
+    _loginUrlOpened = false
+    _preLoginAuthUrl = authUrl
+    actionStatus = "Starting login for " + server + "…"
+    loginProcess.command = [
+      "tailscale", "login",
+      "--login-server=" + server,
+      "--accept-dns=" + (manageExitNodeDns ? "false" : (acceptDns ? "true" : "false")),
+      "--accept-routes=" + (acceptRoutes ? "true" : "false"),
+      "--operator=" + userName
+    ]
+    loginProcess.running = true
+    loginTimeoutTimer.restart()
+    return true
+  }
 
   function parseMullvadExitNodes(raw) {
     mullvadExitNodes = Model.parseExitNodeList(raw)

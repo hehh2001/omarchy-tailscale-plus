@@ -10,6 +10,8 @@ the settings people commonly need from the official Tailscale clients.
 ## Highlights
 
 - Connect, disconnect, authenticate, and switch Tailscale accounts.
+- Log in to Tailscale or alternate self-hosted Headscale control servers from
+  the panel.
 - Select tailnet and Mullvad exit nodes.
 - Show enabled controls with Omarchy's highlighted state and disabled controls
   with the standard dimmed state.
@@ -19,7 +21,8 @@ the settings people commonly need from the official Tailscale clients.
 - Browse peers, copy names and IPv4/IPv6 addresses, and send files with
   Taildrop.
 - Navigate by mouse or keyboard.
-- Optionally switch a systemd-resolved DNS server together with an exit node.
+- Optionally store a different systemd-resolved DNS server for each control
+  server and switch it together with an exit node.
 
 ## Requirements
 
@@ -79,6 +82,8 @@ The plugin exposes these standard Omarchy widget settings:
 | Switch DNS with exit node | Off | Run the optional DNS helper after exit-node changes |
 | Exit node DNS server | Empty | IPv4 or IPv6 resolver reachable through the exit node |
 | Privileged DNS helper | `/usr/local/libexec/omarchy-tailscale-plus-dns` | Root-owned helper path |
+| Login server URL | Tailscale's public control server | Server offered by the panel's login action |
+| Per-tailnet DNS map | `{}` | JSON map from normalized control-server URL to resolver address |
 
 They can be changed through Omarchy's plugin settings or from the CLI:
 
@@ -86,15 +91,41 @@ They can be changed through Omarchy's plugin settings or from the CLI:
 omarchy bar set hehh2001.tailscale-plus refreshIntervalSec 30 --json
 omarchy bar set hehh2001.tailscale-plus manageExitNodeDns true --json
 omarchy bar set hehh2001.tailscale-plus exitNodeDns '<resolver-ip>'
+omarchy bar set hehh2001.tailscale-plus loginServer 'https://headscale.example.com'
+omarchy bar set hehh2001.tailscale-plus exitNodeDnsMap \
+  '{"https://headscale.example.com":"192.0.2.53"}'
 ```
 
 Do not copy the placeholder literally. Use only a resolver you control or
 trust and that remains reachable while the chosen exit node is active.
 
+## Multiple Tailnets and Headscale servers
+
+The Settings section contains two editable fields:
+
+1. **Tailnet login server** accepts an `http://` or `https://` control-server
+   URL. The adjacent login button saves the URL and starts
+   `tailscale login --login-server=<url>`. If browser authentication is needed,
+   the panel opens the URL emitted by the local Tailscale CLI.
+2. **Exit node DNS for this login server** accepts an IPv4 or IPv6 resolver.
+   Saving it stores the resolver under the normalized control-server URL.
+
+Existing profiles remain available through the Connections section and
+`tailscale switch`. Whenever a profile switch changes `ControlURL`, the panel
+selects the matching DNS entry automatically. A legacy single `exitNodeDns`
+setting remains supported as a fallback for users upgrading from version 1.0.
+
+The panel passes arguments directly to the Tailscale process without invoking
+a shell. Login URLs must use HTTP or HTTPS, and DNS values must pass address
+validation. Authentication keys and identity-provider secrets are never
+stored in plugin settings.
+
 ## Optional exit-node DNS integration
 
 This feature is for networks whose policy routing depends on a particular DNS
-resolver. It is not required for ordinary Tailscale exit nodes.
+resolver. It is not required for ordinary Tailscale exit nodes. Resolver
+selection is keyed by the active Tailscale `ControlURL`, so separate Tailnets
+or Headscale deployments can use separate DNS servers.
 
 When configured, selecting an exit node keeps Tailscale's own DNS takeover off
 and assigns the configured resolver plus the `~.` route to `tailscale0`.

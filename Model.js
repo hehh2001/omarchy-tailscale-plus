@@ -324,12 +324,50 @@ function parsePrefs(raw) {
       reportPosture: data.PostureChecking === true,
       hostname: String(data.Hostname || ""),
       operatorUser: String(data.OperatorUser || ""),
+      controlUrl: normalizeControlUrl(data.ControlURL || ""),
       exitNodeId: String(data.ExitNodeID || ""),
       exitNodeActive: String(data.ExitNodeID || "") !== ""
     }
   } catch (e) {
     return { ok: false, error: "Failed to parse Tailscale preferences" }
   }
+}
+
+function normalizeControlUrl(value) {
+  var text = String(value || "").trim()
+  while (text.length > 0 && text.charAt(text.length - 1) === "/") text = text.slice(0, -1)
+  return text
+}
+
+function isValidControlUrl(value) {
+  var text = normalizeControlUrl(value)
+  return /^https?:\/\/[^\s/]+(?::[0-9]{1,5})?(?:\/[^\s]*)?$/.test(text)
+}
+
+function isValidDnsAddress(value) {
+  var text = String(value || "").trim()
+  if (/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(text)) {
+    var parts = text.split(".")
+    for (var i = 0; i < parts.length; i++) if (parseInt(parts[i], 10) > 255) return false
+    return true
+  }
+  return /^[0-9a-fA-F:]+$/.test(text) && text.indexOf(":") !== -1
+}
+
+function parseDnsMap(raw) {
+  try {
+    var parsed = JSON.parse(String(raw || "{}"))
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
+  } catch (e) {
+    return {}
+  }
+}
+
+function dnsForControlUrl(rawMap, controlUrl, fallback) {
+  var map = parseDnsMap(rawMap)
+  var key = normalizeControlUrl(controlUrl)
+  var value = String(map[key] || "").trim()
+  return value !== "" ? value : String(fallback || "").trim()
 }
 
 if (typeof module !== "undefined") {
@@ -351,6 +389,11 @@ if (typeof module !== "undefined") {
     mullvadCountryOptions: mullvadCountryOptions,
     parseStatus: parseStatus,
     parseAccounts: parseAccounts,
-    parsePrefs: parsePrefs
+    parsePrefs: parsePrefs,
+    normalizeControlUrl: normalizeControlUrl,
+    isValidControlUrl: isValidControlUrl,
+    isValidDnsAddress: isValidDnsAddress,
+    parseDnsMap: parseDnsMap,
+    dnsForControlUrl: dnsForControlUrl
   }
 }

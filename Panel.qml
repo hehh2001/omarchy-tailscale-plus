@@ -8,8 +8,8 @@ import qs.Ui
 
 Panel {
   id: root
-  moduleName: "omarchy.tailscale"
-  ipcTarget: "omarchy.tailscale"
+  moduleName: "hehh2001.tailscale-plus"
+  ipcTarget: "hehh2001.tailscale-plus"
   manageIpc: false
 
   property string focusSection: "header"
@@ -23,6 +23,8 @@ Panel {
   property bool copyMenuOpen: false
   property bool mullvadPickerOpen: false
   property string mullvadQuery: ""
+  property string loginServerDraft: ""
+  property string exitNodeDnsDraft: ""
   property int phraseIndex: 0
   readonly property var activePhrases: [
     "Encrypting connections",
@@ -171,6 +173,42 @@ Panel {
     for (var key in settings) if (key !== "id") entry[key] = settings[key]
     entry.recentMullvadRegions = next
     root.bar.shell.updateEntryInline(root.moduleName, entry)
+  }
+
+  function updatePluginSettings(changes) {
+    if (!root.bar || !root.bar.shell || typeof root.bar.shell.updateEntryInline !== "function") return false
+    var entry = { id: root.moduleName }
+    for (var key in settings) if (key !== "id") entry[key] = settings[key]
+    for (var changedKey in changes) entry[changedKey] = changes[changedKey]
+    root.bar.shell.updateEntryInline(root.moduleName, entry)
+    return true
+  }
+
+  function resetTailnetDrafts() {
+    loginServerDraft = tailscale.controlUrl || tailscale.configuredLoginServer
+    exitNodeDnsDraft = tailscale.exitNodeDns
+  }
+
+  function saveTailnetProfile(startLogin) {
+    var server = tailscale.normalizeControlUrl(loginServerDraft)
+    var dns = String(exitNodeDnsDraft || "").trim()
+    if (!tailscale.isValidControlUrl(server)) {
+      tailscale.lastError = "Enter a valid http:// or https:// login server URL"
+      return
+    }
+    if (dns !== "" && !tailscale.isValidDnsAddress(dns)) {
+      tailscale.lastError = "Exit-node DNS must be an IPv4 or IPv6 address"
+      return
+    }
+    var dnsMap = {}
+    try { dnsMap = JSON.parse(String(settings.exitNodeDnsMap || "{}")) } catch (e) { dnsMap = {} }
+    if (!dnsMap || typeof dnsMap !== "object" || Array.isArray(dnsMap)) dnsMap = {}
+    if (dns === "") delete dnsMap[server]
+    else dnsMap[server] = dns
+    updatePluginSettings({ loginServer: server, exitNodeDnsMap: JSON.stringify(dnsMap) })
+    tailscale.lastError = ""
+    tailscale.actionStatus = dns === "" ? "Tailnet profile saved" : "Tailnet DNS profile saved"
+    if (startLogin === true) tailscale.loginToServer(server)
   }
 
   function chooseExitNode(peer) {
@@ -387,6 +425,7 @@ Panel {
     cursorActive = false
     if (panelFlick) panelFlick.contentY = 0
     tailscale.refresh()
+    resetTailnetDrafts()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
   onPeerIndexChanged: scrollCursorIntoView()
@@ -409,6 +448,7 @@ Panel {
     function onPeersChanged() { root.ensureCursor() }
     function onAccountsChanged() { root.ensureCursor() }
     function onAccountsAccessDeniedChanged() { root.ensureCursor() }
+    function onControlUrlChanged() { if (root.opened) root.resetTailnetDrafts() }
   }
 
   IpcHandler {
@@ -726,6 +766,70 @@ Panel {
               text: "SETTINGS"
               foreground: root.foreground
               fontFamily: root.fontFamily
+            }
+
+            Text {
+              width: parent.width
+              text: tailscale.controlUrl === "" ? "TAILNET LOGIN" : "TAILNET LOGIN · " + tailscale.controlUrl
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideMiddle
+            }
+
+            RowLayout {
+              width: parent.width
+              spacing: Style.space(6)
+
+              TextField {
+                id: loginServerField
+                Layout.fillWidth: true
+                foreground: root.foreground
+                placeholderText: "https://headscale.example.com"
+                text: root.loginServerDraft
+                onTextChanged: root.loginServerDraft = text
+                onAccepted: root.saveTailnetProfile(true)
+              }
+
+              PanelActionButton {
+                iconText: "󰍂"
+                tooltipText: "Save and log in to this tailnet"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                enabled: !tailscale.busy
+                onClicked: root.saveTailnetProfile(true)
+              }
+            }
+
+            Text {
+              width: parent.width
+              text: "EXIT NODE DNS FOR THIS LOGIN SERVER"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            RowLayout {
+              width: parent.width
+              spacing: Style.space(6)
+
+              TextField {
+                id: tailnetDnsField
+                Layout.fillWidth: true
+                foreground: root.foreground
+                placeholderText: "IPv4 or IPv6 resolver (optional)"
+                text: root.exitNodeDnsDraft
+                onTextChanged: root.exitNodeDnsDraft = text
+                onAccepted: root.saveTailnetProfile(false)
+              }
+
+              PanelActionButton {
+                iconText: "󰇧"
+                tooltipText: "Save DNS for this tailnet"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.saveTailnetProfile(false)
+              }
             }
 
             Column {

@@ -674,6 +674,104 @@ Panel {
           }
 
           PanelSeparator {
+            visible: tailscale.installed
+            foreground: root.foreground
+          }
+
+          Column {
+            visible: tailscale.installed
+            width: parent.width
+            spacing: Style.space(10)
+
+            PanelSectionHeader {
+              text: "TAILNET & DNS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Text {
+              width: parent.width
+              text: tailscale.controlUrl === "" ? "Not connected to a control server" : "Current network · " + tailscale.controlUrl
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideMiddle
+            }
+
+            Text {
+              width: parent.width
+              text: "LOGIN SERVER"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            RowLayout {
+              width: parent.width
+              spacing: Style.space(6)
+
+              TextField {
+                id: loginServerField
+                Layout.fillWidth: true
+                foreground: root.foreground
+                placeholderText: "https://headscale.example.com"
+                text: root.loginServerDraft
+                onTextChanged: root.loginServerDraft = text
+                onAccepted: root.saveTailnetProfile(true)
+              }
+
+              PanelActionButton {
+                iconText: "󰍂"
+                tooltipText: "Save server and log in"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                enabled: !tailscale.busy
+                onClicked: root.saveTailnetProfile(true)
+              }
+            }
+
+            Text {
+              width: parent.width
+              text: "EXIT NODE DNS FOR THIS SERVER"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            RowLayout {
+              width: parent.width
+              spacing: Style.space(6)
+
+              TextField {
+                id: tailnetDnsField
+                Layout.fillWidth: true
+                foreground: root.foreground
+                placeholderText: "IPv4 or IPv6 resolver (optional)"
+                text: root.exitNodeDnsDraft
+                onTextChanged: root.exitNodeDnsDraft = text
+                onAccepted: root.saveTailnetProfile(false)
+              }
+
+              PanelActionButton {
+                iconText: "󰇧"
+                tooltipText: "Save DNS for this server"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.saveTailnetProfile(false)
+              }
+            }
+
+            Text {
+              width: parent.width
+              text: "Changing the login server starts a new Tailscale/Headscale login. DNS is saved separately for each server."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+          }
+
+          PanelSeparator {
             visible: root.showConnections
             foreground: root.foreground
           }
@@ -897,70 +995,6 @@ Panel {
               text: "SETTINGS"
               foreground: root.foreground
               fontFamily: root.fontFamily
-            }
-
-            Text {
-              width: parent.width
-              text: tailscale.controlUrl === "" ? "TAILNET LOGIN" : "TAILNET LOGIN · " + tailscale.controlUrl
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              elide: Text.ElideMiddle
-            }
-
-            RowLayout {
-              width: parent.width
-              spacing: Style.space(6)
-
-              TextField {
-                id: loginServerField
-                Layout.fillWidth: true
-                foreground: root.foreground
-                placeholderText: "https://headscale.example.com"
-                text: root.loginServerDraft
-                onTextChanged: root.loginServerDraft = text
-                onAccepted: root.saveTailnetProfile(true)
-              }
-
-              PanelActionButton {
-                iconText: "󰍂"
-                tooltipText: "Save and log in to this tailnet"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                enabled: !tailscale.busy
-                onClicked: root.saveTailnetProfile(true)
-              }
-            }
-
-            Text {
-              width: parent.width
-              text: "EXIT NODE DNS FOR THIS LOGIN SERVER"
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-
-            RowLayout {
-              width: parent.width
-              spacing: Style.space(6)
-
-              TextField {
-                id: tailnetDnsField
-                Layout.fillWidth: true
-                foreground: root.foreground
-                placeholderText: "IPv4 or IPv6 resolver (optional)"
-                text: root.exitNodeDnsDraft
-                onTextChanged: root.exitNodeDnsDraft = text
-                onAccepted: root.saveTailnetProfile(false)
-              }
-
-              PanelActionButton {
-                iconText: "󰇧"
-                tooltipText: "Save DNS for this tailnet"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: root.saveTailnetProfile(false)
-              }
             }
 
             Column {

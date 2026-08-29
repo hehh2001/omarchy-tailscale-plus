@@ -108,7 +108,8 @@ trust and that remains reachable while the chosen exit node is active.
 
 ## Multiple Tailnets and Headscale servers
 
-The Settings section contains two editable fields:
+The always-visible **Tailnet & DNS** section near the top of the panel contains
+two editable fields, including while Tailscale is disconnected:
 
 1. **Tailnet login server** accepts an `http://` or `https://` control-server
    URL. The adjacent login button saves the URL and starts

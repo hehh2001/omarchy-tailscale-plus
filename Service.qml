@@ -462,6 +462,11 @@ Item {
   function switchAccount(id) {
     var accountId = String(id || "")
     if (!installed || accountId === "" || accountId === selectedAccountId || switchProcess.running) return
+    if (needsLogin || controlUrl === "") {
+      actionStatus = "Saved connection needs authentication…"
+      loginToServer(configuredLoginServer)
+      return
+    }
     _switchOutput = ""
     _switchError = ""
     switchingAccountId = accountId
@@ -749,9 +754,15 @@ Item {
       var stdout = String(switchStdout.text || root._switchOutput || "")
       var stderr = String(switchStderr.text || root._switchError || "")
       if (exitCode !== 0) {
-        root.lastError = elideStatus(stderr || stdout || "Account switch failed")
-        root.actionStatus = root.lastError
-        actionStatusTimer.restart()
+        if (/profile not found|no such profile/i.test(stderr + "\n" + stdout)) {
+          root.lastError = "Saved connection expired; starting a fresh login"
+          root.actionStatus = root.lastError
+          Qt.callLater(function() { root.loginToServer(root.configuredLoginServer) })
+        } else {
+          root.lastError = elideStatus(stderr || stdout || "Account switch failed")
+          root.actionStatus = root.lastError
+          actionStatusTimer.restart()
+        }
       } else {
         root.lastError = ""
         root.actionStatus = ""

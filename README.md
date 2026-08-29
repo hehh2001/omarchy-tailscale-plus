@@ -134,6 +134,9 @@ Existing profiles remain available through the Connections section and
 `tailscale switch`. Whenever a profile switch changes `ControlURL`, the panel
 selects the matching DNS entry automatically. A legacy single `exitNodeDns`
 setting remains supported as a fallback for users upgrading from version 1.0.
+If a saved profile has expired or the client is logged out, selecting that
+connection starts a fresh login against the configured login server instead of
+repeatedly attempting an invalid profile switch.
 
 The panel passes arguments directly to the Tailscale process without invoking
 a shell. Login URLs must use HTTP or HTTPS, and DNS values must pass address

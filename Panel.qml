@@ -53,10 +53,11 @@ Panel {
   readonly property var exitNodes: displayExitNodes()
   readonly property bool showExitNodes: tailscale.active
   readonly property bool showSettings: tailscale.installed && tailscale.active
+  readonly property string effectiveDnsMode: tailscale.dnsMode === "custom" && !tailscale.exitNodeActive ? "local" : tailscale.dnsMode
   readonly property var preferenceRows: [
-    { key: "dnsMode:tailscale", label: "Tailscale DNS", detail: "Use DNS supplied by the active tailnet", value: tailscale.dnsMode === "tailscale", dnsChoice: true },
-    { key: "dnsMode:local", label: "Local network DNS", detail: "Keep Tailscale DNS and custom exit-node DNS disabled", value: tailscale.dnsMode === "local", dnsChoice: true },
-    { key: "dnsMode:custom", label: "Exit-node custom DNS", detail: "Use this server's DNS only while an exit node is active", value: tailscale.dnsMode === "custom", dnsChoice: true },
+    { key: "dnsMode:tailscale", label: "Tailscale DNS", detail: "Use DNS supplied by the active tailnet", value: root.effectiveDnsMode === "tailscale", dnsChoice: true },
+    { key: "dnsMode:local", label: "Local network DNS", detail: "Use local DNS whenever no custom exit-node DNS is active", value: root.effectiveDnsMode === "local", dnsChoice: true },
+    { key: "dnsMode:custom", label: "Exit-node custom DNS", detail: "Use this server's DNS only while an exit node is active", value: root.effectiveDnsMode === "custom", dnsChoice: true },
     { key: "acceptRoutes", label: "Use subnet routes", detail: "Accept routes advertised by other machines", value: tailscale.acceptRoutes },
     { key: "allowLanAccess", label: "Local network access", detail: "Keep direct LAN access while using an exit node", value: tailscale.allowLanAccess },
     { key: "shieldsUp", label: "Block incoming connections", detail: "Reject incoming Tailscale connections", value: tailscale.shieldsUp },
@@ -260,6 +261,7 @@ Panel {
       return
     }
     if (peer.DisableExitNode === true) {
+      customDnsEditorOpen = false
       tailscale.clearExitNode()
       exitNodePickerOpen = false
       mullvadPickerOpen = false
@@ -492,7 +494,7 @@ Panel {
     cursorActive = false
     exitNodePickerOpen = false
     mullvadPickerOpen = false
-    customDnsEditorOpen = tailscale.dnsMode === "custom"
+    customDnsEditorOpen = tailscale.dnsMode === "custom" && tailscale.exitNodeActive
     if (panelFlick) panelFlick.contentY = 0
     tailscale.refresh()
     resetTailnetDrafts()
@@ -520,6 +522,10 @@ Panel {
     function onAccountsChanged() { root.ensureCursor() }
     function onAccountsAccessDeniedChanged() { root.ensureCursor() }
     function onControlUrlChanged() { if (root.opened) root.resetTailnetDrafts() }
+    function onExitNodeActiveChanged() {
+      if (!tailscale.exitNodeActive) root.customDnsEditorOpen = false
+      else if (tailscale.dnsMode === "custom") root.customDnsEditorOpen = true
+    }
     function onDnsModeAccepted(mode) {
       root.customDnsEditorOpen = mode === "custom"
       root.updatePluginSettings({ manageExitNodeDns: mode === "custom" })
@@ -1016,14 +1022,14 @@ Panel {
               }
 
               Column {
-                visible: tailscale.dnsMode === "custom" || root.customDnsEditorOpen
+                visible: root.effectiveDnsMode === "custom" || root.customDnsEditorOpen
                 width: parent.width
                 spacing: Style.space(6)
 
                 Text {
                   width: parent.width
                   text: "DNS SERVER FOR THIS TAILNET"
-                  color: tailscale.dnsMode === "custom" ? root.foreground : root.dim
+                  color: root.effectiveDnsMode === "custom" ? root.foreground : root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                 }
@@ -1053,7 +1059,7 @@ Panel {
 
                 Text {
                   width: parent.width
-                  text: tailscale.dnsMode === "custom"
+                  text: root.effectiveDnsMode === "custom"
                     ? "Applied only while an exit node is active."
                     : "Saved without changing the active DNS mode."
                   color: root.dim
@@ -1076,7 +1082,7 @@ Panel {
             }
 
             Text {
-              visible: tailscale.dnsMode === "custom"
+              visible: root.effectiveDnsMode === "custom"
               width: parent.width
               text: tailscale.exitNodeDns === ""
                 ? "Custom DNS requires a resolver for this login server."

@@ -125,6 +125,11 @@ field sits directly below **Settings → DNS mode → Exit-node custom DNS**:
    first-time setup, clicking the custom mode opens the editor; saving a valid
    resolver activates the mode.
 
+When **Exit Node** is set to **None**, the saved custom resolver is retained but
+is not shown as active: the editor collapses and **Local network DNS** is
+highlighted. Selecting an exit node again restores the saved custom mode and
+expands its editor.
+
 Existing profiles remain available through the Connections section and
 `tailscale switch`. Whenever a profile switch changes `ControlURL`, the panel
 selects the matching DNS entry automatically. A legacy single `exitNodeDns`

@@ -23,6 +23,7 @@ Panel {
   property bool copyMenuOpen: false
   property bool exitNodePickerOpen: false
   property bool mullvadPickerOpen: false
+  property bool customDnsEditorOpen: false
   property string mullvadQuery: ""
   property string loginServerDraft: ""
   property string exitNodeDnsDraft: ""
@@ -241,7 +242,10 @@ Panel {
     if (dns === "") delete dnsMap[server]
     else dnsMap[server] = dns
     updatePluginSettings({ loginServer: server, exitNodeDnsMap: JSON.stringify(dnsMap) })
-    if (server === tailscale.normalizeControlUrl(tailscale.controlUrl)) tailscale.applyCustomDns(dns)
+    if (server === tailscale.normalizeControlUrl(tailscale.controlUrl)) {
+      if (startLogin !== true && customDnsEditorOpen && tailscale.dnsMode !== "custom" && dns !== "") tailscale.setDnsMode("custom", dns)
+      else tailscale.applyCustomDns(dns)
+    }
     tailscale.lastError = ""
     tailscale.actionStatus = dns === "" ? "Tailnet profile saved" : "Tailnet DNS profile saved"
     if (startLogin === true) tailscale.loginToServer(server)
@@ -273,7 +277,16 @@ Panel {
   }
 
   function togglePreference(key) {
-    if (String(key || "").indexOf("dnsMode:") === 0) tailscale.setDnsMode(String(key).slice(8))
+    if (String(key || "").indexOf("dnsMode:") === 0) {
+      var mode = String(key).slice(8)
+      if (mode === "custom") {
+        customDnsEditorOpen = true
+        if (tailscale.exitNodeDns !== "") tailscale.setDnsMode(mode, tailscale.exitNodeDns)
+      } else {
+        customDnsEditorOpen = false
+        tailscale.setDnsMode(mode)
+      }
+    }
     else if (key === "acceptRoutes") tailscale.toggleAcceptRoutes()
     else if (key === "allowLanAccess") tailscale.toggleAllowLanAccess()
     else if (key === "shieldsUp") tailscale.toggleShieldsUp()
@@ -479,6 +492,7 @@ Panel {
     cursorActive = false
     exitNodePickerOpen = false
     mullvadPickerOpen = false
+    customDnsEditorOpen = tailscale.dnsMode === "custom"
     if (panelFlick) panelFlick.contentY = 0
     tailscale.refresh()
     resetTailnetDrafts()
@@ -506,7 +520,10 @@ Panel {
     function onAccountsChanged() { root.ensureCursor() }
     function onAccountsAccessDeniedChanged() { root.ensureCursor() }
     function onControlUrlChanged() { if (root.opened) root.resetTailnetDrafts() }
-    function onDnsModeAccepted(mode) { root.updatePluginSettings({ manageExitNodeDns: mode === "custom" }) }
+    function onDnsModeAccepted(mode) {
+      root.customDnsEditorOpen = mode === "custom"
+      root.updatePluginSettings({ manageExitNodeDns: mode === "custom" })
+    }
   }
 
   IpcHandler {
@@ -999,6 +1016,7 @@ Panel {
               }
 
               Column {
+                visible: tailscale.dnsMode === "custom" || root.customDnsEditorOpen
                 width: parent.width
                 spacing: Style.space(6)
 

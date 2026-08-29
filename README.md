@@ -120,6 +120,10 @@ field sits directly below **Settings → DNS mode → Exit-node custom DNS**:
    the panel opens the URL emitted by the local Tailscale CLI.
 2. **DNS server for this tailnet** accepts an IPv4 or IPv6 resolver.
    Saving it stores the resolver under the normalized control-server URL.
+   The editor is integrated under **Exit-node custom DNS**: it expands when
+   that mode is selected and collapses when another DNS mode is chosen. On a
+   first-time setup, clicking the custom mode opens the editor; saving a valid
+   resolver activates the mode.
 
 Existing profiles remain available through the Connections section and
 `tailscale switch`. Whenever a profile switch changes `ControlURL`, the panel

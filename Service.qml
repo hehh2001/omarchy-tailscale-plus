@@ -94,6 +94,7 @@ Item {
   property string _dnsError: ""
   property bool _pendingExitNodeEnable: false
   property string _pendingDnsMode: ""
+  property string _pendingDnsResolver: ""
 
   signal dnsModeAccepted(string mode)
 
@@ -343,11 +344,12 @@ Item {
     settingProcess.running = true
   }
 
-  function setDnsMode(mode) {
+  function setDnsMode(mode, resolver) {
     var next = String(mode || "")
+    var requestedResolver = resolver === undefined || resolver === null ? String(exitNodeDns || "") : String(resolver || "").trim()
     if (!installed || settingProcess.running || dnsProcess.running) return
     if (next !== "tailscale" && next !== "custom" && next !== "local") return
-    if (next === "custom" && exitNodeDns === "") {
+    if (next === "custom" && requestedResolver === "") {
       lastError = "Configure an exit-node DNS server before enabling custom DNS"
       actionStatus = lastError
       actionStatusTimer.restart()
@@ -355,6 +357,7 @@ Item {
     }
     changingSetting = "dnsMode"
     _pendingDnsMode = next
+    _pendingDnsResolver = requestedResolver
     _settingOutput = ""
     _settingError = ""
     settingProcess.command = ["tailscale", "set", "--accept-dns=" + (next === "tailscale" ? "true" : "false")]
@@ -800,10 +803,11 @@ Item {
         root.lastError = ""
         if (requestedDnsMode !== "") {
           root.dnsModeAccepted(requestedDnsMode)
-          root.startDnsHelper(requestedDnsMode === "custom" && root.exitNodeActive, root.exitNodeDns)
+          root.startDnsHelper(requestedDnsMode === "custom" && root.exitNodeActive, root._pendingDnsResolver)
         }
       }
       root._pendingDnsMode = ""
+      root._pendingDnsResolver = ""
       root.changingSetting = ""
       delayedRefresh.restart()
     }

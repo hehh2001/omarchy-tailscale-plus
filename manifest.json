@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "hehh2001.tailscale-plus",
+  "name": "Tailscale Plus",
+  "version": "1.0.0",
+  "author": "hehh2001",
+  "license": "MIT",
+  "description": "A full-featured, native Omarchy control panel for Tailscale.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Tailscale Plus",
+    "description": "Control connections, exit nodes, DNS, routes, privacy, sharing, updates, and peers.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 30,
+      "exitNodeDns": "",
+      "manageExitNodeDns": false,
+      "dnsHelper": "/usr/local/libexec/omarchy-tailscale-plus-dns"
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 5,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 30
+      },
+      {
+        "key": "manageExitNodeDns",
+        "type": "boolean",
+        "label": "Switch DNS with exit node",
+        "defaultValue": false
+      },
+      {
+        "key": "exitNodeDns",
+        "type": "string",
+        "label": "Exit node DNS server",
+        "defaultValue": ""
+      },
+      {
+        "key": "dnsHelper",
+        "type": "string",
+        "label": "Privileged DNS helper",
+        "defaultValue": "/usr/local/libexec/omarchy-tailscale-plus-dns"
+      }
+    ]
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.tailscale"
+  }
+}

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+action="${1:-}"
+dns_server="${2:-}"
+interface="${3:-tailscale0}"
+
+if [[ $EUID -ne 0 ]]; then
+  echo "This helper must run as root." >&2
+  exit 77
+fi
+
+if [[ $interface != tailscale0 ]]; then
+  echo "Only tailscale0 is supported." >&2
+  exit 64
+fi
+
+case "$action" in
+on)
+  [[ -n $dns_server ]] || { echo "A DNS server is required." >&2; exit 64; }
+  [[ $dns_server =~ ^[0-9a-fA-F:.]+$ ]] || { echo "DNS server must be an IPv4 or IPv6 address." >&2; exit 64; }
+  resolvectl dns "$interface" "$dns_server"
+  resolvectl domain "$interface" '~.'
+  resolvectl default-route "$interface" yes
+  resolvectl flush-caches
+  ;;
+off)
+  resolvectl revert "$interface"
+  resolvectl flush-caches
+  ;;
+*)
+  echo "Usage: $0 on <dns-server> [interface] | off _ [interface]" >&2
+  exit 64
+  ;;
+esac

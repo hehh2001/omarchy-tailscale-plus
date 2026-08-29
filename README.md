@@ -12,7 +12,8 @@ the settings people commonly need from the official Tailscale clients.
 - Connect, disconnect, authenticate, and switch Tailscale accounts.
 - Log in to Tailscale or alternate self-hosted Headscale control servers from
   the panel.
-- Select tailnet and Mullvad exit nodes.
+- Select any advertised Tailnet, Headscale, or Mullvad exit node from one
+  compact dropdown; choose **None** to disable exit-node routing.
 - Show enabled controls with Omarchy's highlighted state and disabled controls
   with the standard dimmed state.
 - Toggle Tailscale DNS, advertised subnet routes, exit-node LAN access,
@@ -57,6 +58,12 @@ The published plugin ID is `hehh2001.tailscale-plus`.
 Left-click the bar icon to open the panel. Right-click toggles the Tailscale
 connection. Enabled accounts, exit nodes, and switches are highlighted;
 disabled states are dim.
+
+The Exit Nodes selector always shows the current choice in its collapsed row.
+Open it to see **None** followed by every exit node advertised on the active
+Tailnet or Headscale network. The selected row is highlighted. Choosing another
+row switches gateways directly; choosing **None** disables exit-node routing
+and restores the DNS behavior configured for that control server.
 
 Keyboard shortcuts inside the panel:
 

@@ -21,6 +21,7 @@ Panel {
   property int mullvadRegionIndex: 0
   property bool cursorActive: false
   property bool copyMenuOpen: false
+  property bool exitNodePickerOpen: false
   property bool mullvadPickerOpen: false
   property string mullvadQuery: ""
   property string loginServerDraft: ""
@@ -49,7 +50,7 @@ Panel {
   readonly property var recentMullvadRegions: settings.recentMullvadRegions instanceof Array ? settings.recentMullvadRegions : (settings.recentMullvadCountries instanceof Array ? settings.recentMullvadCountries : [])
   readonly property var recentMullvadExitNodes: recentMullvadNodes()
   readonly property var exitNodes: displayExitNodes()
-  readonly property bool showExitNodes: tailscale.active && (exitNodes.length > 0 || tailscale.mullvadRegions.length > 0)
+  readonly property bool showExitNodes: tailscale.active
   readonly property bool showSettings: tailscale.installed && tailscale.active
   readonly property var preferenceRows: [
     { key: "acceptDns", label: "Use Tailscale DNS", detail: "Accept DNS configuration from the tailnet", value: tailscale.acceptDns },
@@ -89,11 +90,43 @@ Panel {
   }
 
   function displayExitNodes() {
-    var nodes = []
+    var nodes = [{ id: "exit:none", DisableExitNode: true, DisplayName: "None", ExitNode: !tailscale.exitNodeActive }]
     for (var i = 0; i < tailscale.tailnetExitNodes.length; i++) nodes.push(tailscale.tailnetExitNodes[i])
     for (var j = 0; j < recentMullvadExitNodes.length; j++) nodes.push(recentMullvadExitNodes[j])
     if (tailscale.mullvadRegions.length > 0) nodes.push({ id: "mullvad:add", AddMullvad: true, DisplayName: "Choose Mullvad region" })
     return nodes
+  }
+
+  function activeExitNode() {
+    for (var i = 0; i < exitNodes.length; i++) {
+      var node = exitNodes[i]
+      if (node && node.DisableExitNode !== true && node.ExitNode === true) return node
+    }
+    return null
+  }
+
+  function exitNodeSummary() {
+    var node = activeExitNode()
+    return node ? String(node.DisplayName || node.HostName || "Unknown") : "None"
+  }
+
+  function syncExitNodeIndex() {
+    exitNodeIndex = 0
+    for (var i = 0; i < exitNodes.length; i++) {
+      if (exitNodes[i] && exitNodes[i].ExitNode === true) {
+        exitNodeIndex = i
+        return
+      }
+    }
+  }
+
+  function toggleExitNodePicker() {
+    exitNodePickerOpen = !exitNodePickerOpen
+    mullvadPickerOpen = false
+    if (exitNodePickerOpen) {
+      syncExitNodeIndex()
+      Qt.callLater(scrollCursorIntoView)
+    }
   }
 
   function recentMullvadNodes() {
@@ -219,8 +252,15 @@ Panel {
       if (mullvadPickerOpen) Qt.callLater(function() { if (mullvadSearch) mullvadSearch.forceActiveFocus() })
       return
     }
+    if (peer.DisableExitNode === true) {
+      tailscale.clearExitNode()
+      exitNodePickerOpen = false
+      mullvadPickerOpen = false
+      return
+    }
     if (peer.Mullvad === true) persistRecentMullvad(mullvadRegionKey(peer))
-    tailscale.setExitNode(peer)
+    if (peer.ExitNode !== true) tailscale.setExitNode(peer)
+    exitNodePickerOpen = false
     mullvadPickerOpen = false
   }
 
@@ -292,6 +332,13 @@ Panel {
           peerIndex++
         }
       } else if (focusSection === "exitNodes") {
+        if (!exitNodePickerOpen) {
+          if (dy < 0) focusSection = tailscale.accounts.length > 1 ? "accounts" : (tailscale.accountsAccessDenied ? "auth" : "header")
+          else if (showSettings) focusSection = "settings"
+          ensureCursor()
+          scrollCursorIntoView()
+          return
+        }
         if (dy < 0) {
           if (exitNodeIndex <= 0) focusSection = tailscale.accounts.length > 1 ? "accounts" : (tailscale.accountsAccessDenied ? "auth" : "header")
           else exitNodeIndex--
@@ -324,7 +371,8 @@ Panel {
     } else if (focusSection === "peers") {
       openSelectedPeerCopyMenu()
     } else if (focusSection === "exitNodes") {
-      chooseExitNode(selectedExitNode())
+      if (!exitNodePickerOpen) toggleExitNodePicker()
+      else chooseExitNode(selectedExitNode())
     } else if (focusSection === "settings") {
       if (settingIndex >= 0 && settingIndex < preferenceRows.length) togglePreference(preferenceRows[settingIndex].key)
     }
@@ -360,7 +408,7 @@ Panel {
 
   function scrollCursorIntoView() {
     if (focusSection === "peers" && peerColumn && peerIndex >= 0 && peerIndex < peerColumn.children.length) scrollItemIntoView(peerColumn.children[peerIndex])
-    else if (focusSection === "exitNodes" && exitNodeColumn && exitNodeIndex >= 0 && exitNodeIndex < exitNodeColumn.children.length) scrollItemIntoView(exitNodeColumn.children[exitNodeIndex])
+    else if (focusSection === "exitNodes" && exitNodePickerOpen && exitNodeColumn && exitNodeIndex >= 0 && exitNodeIndex < exitNodeColumn.children.length) scrollItemIntoView(exitNodeColumn.children[exitNodeIndex])
     else if (focusSection === "settings" && settingsColumn && settingIndex >= 0 && settingIndex < settingsColumn.children.length) scrollItemIntoView(settingsColumn.children[settingIndex])
   }
 
@@ -423,6 +471,8 @@ Panel {
 
   onOpenedChanged: if (opened) {
     cursorActive = false
+    exitNodePickerOpen = false
+    mullvadPickerOpen = false
     if (panelFlick) panelFlick.contentY = 0
     tailscale.refresh()
     resetTailnetDrafts()
@@ -435,6 +485,7 @@ Panel {
   onShowConnectionsChanged: ensureCursor()
   onShowPeersChanged: ensureCursor()
   onShowExitNodesChanged: ensureCursor()
+  onExitNodesChanged: if (exitNodePickerOpen) syncExitNodeIndex()
   onShowSettingsChanged: ensureCursor()
   onFilteredMullvadRegionsChanged: ensureCursor()
 
@@ -507,7 +558,14 @@ Panel {
         root.moveCursor(dx, dy)
       }
       onActivateRequested: if (root.cursorActive) root.activateCursor()
-      onCloseRequested: root.close()
+      onCloseRequested: {
+        if (root.mullvadPickerOpen) {
+          root.mullvadPickerOpen = false
+          keyCatcher.forceActiveFocus()
+        } else if (root.exitNodePickerOpen) {
+          root.exitNodePickerOpen = false
+        } else root.close()
+      }
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "t" || t === "T") tailscale.toggleTailscale()
@@ -664,8 +722,81 @@ Panel {
               fontFamily: root.fontFamily
             }
 
+            CursorSurface {
+              id: exitNodeSelector
+              width: parent.width
+              foreground: root.foreground
+              fill: root.hoverFill
+              currentFill: root.selectedFill
+              hasCursor: root.cursorActive && root.focusSection === "exitNodes" && !root.exitNodePickerOpen
+              current: tailscale.exitNodeActive
+              implicitHeight: exitNodeSelectorRow.implicitHeight + Style.spacing.rowPaddingX
+
+              RowLayout {
+                id: exitNodeSelectorRow
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.leftMargin: Style.space(10)
+                anchors.rightMargin: Style.space(10)
+                spacing: Style.space(8)
+
+                Text {
+                  text: tailscale.exitNodeActive ? "󱇢" : "󰅖"
+                  color: tailscale.exitNodeActive ? root.foreground : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  Layout.alignment: Qt.AlignVCenter
+                }
+
+                ColumnLayout {
+                  Layout.fillWidth: true
+                  spacing: Style.space(1)
+
+                  Text {
+                    Layout.fillWidth: true
+                    text: root.exitNodeSummary()
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    font.bold: tailscale.exitNodeActive
+                    elide: Text.ElideRight
+                  }
+
+                  Text {
+                    Layout.fillWidth: true
+                    text: tailscale.exitNodeActive ? "Internet traffic uses this exit node" : "Exit node disabled"
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    elide: Text.ElideRight
+                  }
+                }
+
+                Text {
+                  text: root.exitNodePickerOpen ? "󰅃" : "󰅀"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  Layout.alignment: Qt.AlignVCenter
+                }
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onEntered: {
+                  root.cursorActive = true
+                  root.focusSection = "exitNodes"
+                }
+                onClicked: root.toggleExitNodePicker()
+              }
+            }
+
             Column {
               id: exitNodeColumn
+              visible: root.exitNodePickerOpen
               width: parent.width
               spacing: Style.space(6)
 
@@ -1375,10 +1506,11 @@ Panel {
     property var peer: null
     property int rowIndex: 0
     readonly property bool addMullvad: peer && peer.AddMullvad === true
+    readonly property bool disableOption: peer && peer.DisableExitNode === true
     readonly property bool activeExitNode: peer && peer.ExitNode === true
     readonly property bool settingExitNode: peer && tailscale.settingExitNodeId === String(peer.id || "")
     readonly property string peerName: peer ? String(peer.DisplayName || peer.HostName || "Unknown") : "Unknown"
-    readonly property string actionTooltip: addMullvad ? "" : (activeExitNode ? "Disconnect" : "Connect")
+    readonly property string actionTooltip: addMullvad ? "" : (disableOption ? "Disable exit node" : (activeExitNode ? "Selected" : "Use this exit node"))
 
     hasCursor: root.cursorActive && root.focusSection === "exitNodes" && root.exitNodeIndex === rowIndex
     current: activeExitNode || settingExitNode || (addMullvad && root.mullvadPickerOpen)
@@ -1399,7 +1531,7 @@ Panel {
 
       Text {
         id: exitNodeGlyph
-        text: exitNodeRow.addMullvad ? "+" : (peer && peer.Mullvad === true ? "󰖂" : "󱇢")
+        text: exitNodeRow.addMullvad ? "+" : (exitNodeRow.disableOption ? "󰅖" : (peer && peer.Mullvad === true ? "󰖂" : "󱇢"))
         color: exitNodeRow.activeExitNode || exitNodeRow.settingExitNode || exitNodeRow.addMullvad ? root.foreground : root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.body

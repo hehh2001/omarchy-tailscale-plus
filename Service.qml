@@ -441,13 +441,21 @@ Item {
 
   function setExitNode(peer) {
     if (!installed || !running || !peer || exitNodeProcess.running) return
-    var active = peer.ExitNode === true
-    var target = active ? "" : exitNodeTarget(peer)
-    if (!active && target === "") return
+    var target = exitNodeTarget(peer)
+    if (target === "" || peer.ExitNode === true) return
+    changeExitNode(target, true, String(peer.id || target))
+  }
+
+  function clearExitNode() {
+    if (!installed || !running || exitNodeProcess.running || !exitNodeActive) return
+    changeExitNode("", false, "exit:none")
+  }
+
+  function changeExitNode(target, enable, id) {
     _exitNodeOutput = ""
     _exitNodeError = ""
-    settingExitNodeId = String(peer.id || "")
-    _pendingExitNodeEnable = !active
+    settingExitNodeId = String(id || "")
+    _pendingExitNodeEnable = enable === true
     var command = ["tailscale", "set", "--exit-node=" + target]
     // Custom exit-node DNS and Tailscale-managed DNS are mutually exclusive.
     // Keep accept-dns disabled after disconnect as well so the local uplink

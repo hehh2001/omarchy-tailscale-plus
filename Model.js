@@ -370,6 +370,11 @@ function dnsForControlUrl(rawMap, controlUrl, fallback) {
   return value !== "" ? value : String(fallback || "").trim()
 }
 
+function dnsMode(acceptDns, manageExitNodeDns) {
+  if (acceptDns === true) return "tailscale"
+  return manageExitNodeDns === true ? "custom" : "local"
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     filterIPv4: filterIPv4,
@@ -394,6 +399,7 @@ if (typeof module !== "undefined") {
     isValidControlUrl: isValidControlUrl,
     isValidDnsAddress: isValidDnsAddress,
     parseDnsMap: parseDnsMap,
-    dnsForControlUrl: dnsForControlUrl
+    dnsForControlUrl: dnsForControlUrl,
+    dnsMode: dnsMode
   }
 }

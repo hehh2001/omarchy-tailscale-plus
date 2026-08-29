@@ -53,7 +53,9 @@ Panel {
   readonly property bool showExitNodes: tailscale.active
   readonly property bool showSettings: tailscale.installed && tailscale.active
   readonly property var preferenceRows: [
-    { key: "acceptDns", label: "Use Tailscale DNS", detail: "Accept DNS configuration from the tailnet", value: tailscale.acceptDns },
+    { key: "dnsMode:tailscale", label: "Tailscale DNS", detail: "Use DNS supplied by the active tailnet", value: tailscale.dnsMode === "tailscale", dnsChoice: true },
+    { key: "dnsMode:local", label: "Local network DNS", detail: "Keep Tailscale DNS and custom exit-node DNS disabled", value: tailscale.dnsMode === "local", dnsChoice: true },
+    { key: "dnsMode:custom", label: "Exit-node custom DNS", detail: "Use this server's DNS only while an exit node is active", value: tailscale.dnsMode === "custom", dnsChoice: true },
     { key: "acceptRoutes", label: "Use subnet routes", detail: "Accept routes advertised by other machines", value: tailscale.acceptRoutes },
     { key: "allowLanAccess", label: "Local network access", detail: "Keep direct LAN access while using an exit node", value: tailscale.allowLanAccess },
     { key: "shieldsUp", label: "Block incoming connections", detail: "Reject incoming Tailscale connections", value: tailscale.shieldsUp },
@@ -239,6 +241,7 @@ Panel {
     if (dns === "") delete dnsMap[server]
     else dnsMap[server] = dns
     updatePluginSettings({ loginServer: server, exitNodeDnsMap: JSON.stringify(dnsMap) })
+    if (server === tailscale.normalizeControlUrl(tailscale.controlUrl)) tailscale.applyCustomDns(dns)
     tailscale.lastError = ""
     tailscale.actionStatus = dns === "" ? "Tailnet profile saved" : "Tailnet DNS profile saved"
     if (startLogin === true) tailscale.loginToServer(server)
@@ -270,7 +273,7 @@ Panel {
   }
 
   function togglePreference(key) {
-    if (key === "acceptDns") tailscale.toggleAcceptDns()
+    if (String(key || "").indexOf("dnsMode:") === 0) tailscale.setDnsMode(String(key).slice(8))
     else if (key === "acceptRoutes") tailscale.toggleAcceptRoutes()
     else if (key === "allowLanAccess") tailscale.toggleAllowLanAccess()
     else if (key === "shieldsUp") tailscale.toggleShieldsUp()
@@ -409,7 +412,10 @@ Panel {
   function scrollCursorIntoView() {
     if (focusSection === "peers" && peerColumn && peerIndex >= 0 && peerIndex < peerColumn.children.length) scrollItemIntoView(peerColumn.children[peerIndex])
     else if (focusSection === "exitNodes" && exitNodePickerOpen && exitNodeColumn && exitNodeIndex >= 0 && exitNodeIndex < exitNodeColumn.children.length) scrollItemIntoView(exitNodeColumn.children[exitNodeIndex])
-    else if (focusSection === "settings" && settingsColumn && settingIndex >= 0 && settingIndex < settingsColumn.children.length) scrollItemIntoView(settingsColumn.children[settingIndex])
+    else if (focusSection === "settings" && settingsColumn && settingIndex >= 0) {
+      var childIndex = settingIndex < 3 ? settingIndex : settingIndex + 1
+      if (childIndex < settingsColumn.children.length) scrollItemIntoView(settingsColumn.children[childIndex])
+    }
   }
 
   function scrollMullvadRegionCursorIntoView() {
@@ -500,6 +506,7 @@ Panel {
     function onAccountsChanged() { root.ensureCursor() }
     function onAccountsAccessDeniedChanged() { root.ensureCursor() }
     function onControlUrlChanged() { if (root.opened) root.resetTailnetDrafts() }
+    function onDnsModeAccepted(mode) { root.updatePluginSettings({ manageExitNodeDns: mode === "custom" }) }
   }
 
   IpcHandler {
@@ -513,6 +520,7 @@ Panel {
     function up(): string { tailscale.loginOrUp(); return "ok" }
     function down(): string { tailscale.down(); return "ok" }
     function toggleTailscale(): string { tailscale.toggleTailscale(); return "ok" }
+    function setDnsMode(mode: string): string { tailscale.setDnsMode(mode); return "ok" }
     function status(): string { return tailscale.statusText }
   }
 
@@ -684,7 +692,7 @@ Panel {
             spacing: Style.space(10)
 
             PanelSectionHeader {
-              text: "TAILNET & DNS"
+              text: "TAILNET"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -732,38 +740,7 @@ Panel {
 
             Text {
               width: parent.width
-              text: "EXIT NODE DNS FOR THIS SERVER"
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-
-            RowLayout {
-              width: parent.width
-              spacing: Style.space(6)
-
-              TextField {
-                id: tailnetDnsField
-                Layout.fillWidth: true
-                foreground: root.foreground
-                placeholderText: "IPv4 or IPv6 resolver (optional)"
-                text: root.exitNodeDnsDraft
-                onTextChanged: root.exitNodeDnsDraft = text
-                onAccepted: root.saveTailnetProfile(false)
-              }
-
-              PanelActionButton {
-                iconText: "󰇧"
-                tooltipText: "Save DNS for this server"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: root.saveTailnetProfile(false)
-              }
-            }
-
-            Text {
-              width: parent.width
-              text: "Changing the login server starts a new Tailscale/Headscale login. DNS is saved separately for each server."
+              text: "Changing the login server starts a new Tailscale/Headscale login."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -997,13 +974,21 @@ Panel {
               fontFamily: root.fontFamily
             }
 
+            Text {
+              width: parent.width
+              text: "DNS MODE · SELECT ONE"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
             Column {
               id: settingsColumn
               width: parent.width
               spacing: Style.space(6)
 
               Repeater {
-                model: root.preferenceRows
+                model: root.preferenceRows.slice(0, 3)
                 SettingRow {
                   required property var modelData
                   required property int index
@@ -1012,14 +997,72 @@ Panel {
                   rowIndex: index
                 }
               }
+
+              Column {
+                width: parent.width
+                spacing: Style.space(6)
+
+                Text {
+                  width: parent.width
+                  text: "DNS SERVER FOR THIS TAILNET"
+                  color: tailscale.dnsMode === "custom" ? root.foreground : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                RowLayout {
+                  width: parent.width
+                  spacing: Style.space(6)
+
+                  TextField {
+                    id: tailnetDnsField
+                    Layout.fillWidth: true
+                    foreground: root.foreground
+                    placeholderText: "IPv4 or IPv6 resolver (optional)"
+                    text: root.exitNodeDnsDraft
+                    onTextChanged: root.exitNodeDnsDraft = text
+                    onAccepted: root.saveTailnetProfile(false)
+                  }
+
+                  PanelActionButton {
+                    iconText: "󰇧"
+                    tooltipText: "Save custom DNS for this tailnet"
+                    foreground: root.foreground
+                    fontFamily: root.fontFamily
+                    onClicked: root.saveTailnetProfile(false)
+                  }
+                }
+
+                Text {
+                  width: parent.width
+                  text: tailscale.dnsMode === "custom"
+                    ? "Applied only while an exit node is active."
+                    : "Saved without changing the active DNS mode."
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+              }
+
+              Repeater {
+                model: root.preferenceRows.slice(3)
+                SettingRow {
+                  required property var modelData
+                  required property int index
+                  width: settingsColumn.width
+                  preference: modelData
+                  rowIndex: index + 3
+                }
+              }
             }
 
             Text {
-              visible: tailscale.manageExitNodeDns
+              visible: tailscale.dnsMode === "custom"
               width: parent.width
               text: tailscale.exitNodeDns === ""
-                ? "Exit-node DNS switching is enabled, but no DNS server is configured."
-                : "Exit-node DNS: " + tailscale.exitNodeDns
+                ? "Custom DNS requires a resolver for this login server."
+                : (tailscale.exitNodeActive ? "Custom DNS active: " : "Custom DNS ready: ") + tailscale.exitNodeDns
               color: tailscale.exitNodeDns === "" ? root.urgent : root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -1164,6 +1207,7 @@ Panel {
     property var preference: null
     property int rowIndex: 0
     readonly property bool enabledSetting: preference && preference.value === true
+    readonly property bool dnsChoice: preference && preference.dnsChoice === true
     readonly property bool changing: preference && tailscale.changingSetting === String(preference.key || "")
 
     hasCursor: root.cursorActive && root.focusSection === "settings" && root.settingIndex === rowIndex
@@ -1207,12 +1251,22 @@ Panel {
       }
 
       ToggleSwitch {
+        visible: !settingRow.dnsChoice
         checked: settingRow.enabledSetting
         hasCursor: settingRow.hasCursor
         enabled: !tailscale.busy
         foreground: root.foreground
         onHovered: function(on) { if (on) root.setSettingCursor(settingRow.rowIndex) }
         onToggled: if (settingRow.preference) root.togglePreference(settingRow.preference.key)
+      }
+
+      Text {
+        visible: settingRow.dnsChoice
+        text: settingRow.enabledSetting ? "●" : "○"
+        color: settingRow.enabledSetting ? root.foreground : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        Layout.alignment: Qt.AlignVCenter
       }
     }
 

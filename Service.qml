@@ -60,6 +60,7 @@ Item {
   readonly property string exitNodeDnsMap: String(setting("exitNodeDnsMap", "{}") || "{}")
   readonly property string exitNodeDns: Model.dnsForControlUrl(exitNodeDnsMap, controlUrl, setting("exitNodeDns", ""))
   readonly property string dnsHelper: String(setting("dnsHelper", "/usr/local/libexec/omarchy-tailscale-plus-dns") || "")
+  readonly property string dnsMode: Model.dnsMode(acceptDns, manageExitNodeDns)
 
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 30, 5, 3600)
   readonly property bool busy: whichProcess.running || statusProcess.running || prefsProcess.running || mullvadExitNodesProcess.running || accountsProcess.running || actionProcess.running || loginProcess.running || switchProcess.running || operatorProcess.running || exitNodeProcess.running || settingProcess.running || dnsProcess.running
@@ -92,6 +93,9 @@ Item {
   property string _dnsOutput: ""
   property string _dnsError: ""
   property bool _pendingExitNodeEnable: false
+  property string _pendingDnsMode: ""
+
+  signal dnsModeAccepted(string mode)
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -339,7 +343,39 @@ Item {
     settingProcess.running = true
   }
 
-  function toggleAcceptDns() { setBooleanPreference("acceptDns", "accept-dns", !acceptDns) }
+  function setDnsMode(mode) {
+    var next = String(mode || "")
+    if (!installed || settingProcess.running || dnsProcess.running) return
+    if (next !== "tailscale" && next !== "custom" && next !== "local") return
+    if (next === "custom" && exitNodeDns === "") {
+      lastError = "Configure an exit-node DNS server before enabling custom DNS"
+      actionStatus = lastError
+      actionStatusTimer.restart()
+      return
+    }
+    changingSetting = "dnsMode"
+    _pendingDnsMode = next
+    _settingOutput = ""
+    _settingError = ""
+    settingProcess.command = ["tailscale", "set", "--accept-dns=" + (next === "tailscale" ? "true" : "false")]
+    settingProcess.running = true
+  }
+
+  function startDnsHelper(enable, resolver) {
+    if (dnsProcess.running || dnsHelper === "") return
+    var dns = resolver === undefined || resolver === null ? String(exitNodeDns || "") : String(resolver || "")
+    if (enable && dns === "") return
+    _dnsOutput = ""
+    _dnsError = ""
+    dnsProcess.command = ["sudo", "-n", dnsHelper, enable ? "on" : "off", enable ? dns : "_", "tailscale0"]
+    dnsProcess.running = true
+  }
+
+  function applyCustomDns(resolver) {
+    if (dnsMode !== "custom" || !exitNodeActive) return
+    var dns = String(resolver || "")
+    startDnsHelper(dns !== "", dns)
+  }
   function toggleAcceptRoutes() { setBooleanPreference("acceptRoutes", "accept-routes", !acceptRoutes) }
   function toggleAllowLanAccess() { setBooleanPreference("allowLanAccess", "exit-node-allow-lan-access", !allowLanAccess) }
   function toggleShieldsUp() { setBooleanPreference("shieldsUp", "shields-up", !shieldsUp) }
@@ -371,7 +407,7 @@ Item {
     loginProcess.command = [
       "tailscale", "login",
       "--login-server=" + server,
-      "--accept-dns=" + (manageExitNodeDns ? "false" : (acceptDns ? "true" : "false")),
+      "--accept-dns=" + (dnsMode === "tailscale" ? "true" : "false"),
       "--accept-routes=" + (acceptRoutes ? "true" : "false"),
       "--operator=" + userName
     ]
@@ -460,7 +496,7 @@ Item {
     // Custom exit-node DNS and Tailscale-managed DNS are mutually exclusive.
     // Keep accept-dns disabled after disconnect as well so the local uplink
     // resolver can take over when the helper reverts tailscale0.
-    if (manageExitNodeDns) command.push("--accept-dns=false")
+    if (dnsMode === "custom") command.push("--accept-dns=false")
     exitNodeProcess.command = command
     exitNodeProcess.running = true
   }
@@ -739,12 +775,7 @@ Item {
       } else {
         root.lastError = ""
         root.actionStatus = ""
-        if (root.manageExitNodeDns && root.exitNodeDns !== "" && root.dnsHelper !== "") {
-          root._dnsOutput = ""
-          root._dnsError = ""
-          dnsProcess.command = ["sudo", "-n", root.dnsHelper, root._pendingExitNodeEnable ? "on" : "off", root.exitNodeDns, "tailscale0"]
-          dnsProcess.running = true
-        }
+        if (root.dnsMode === "custom") root.startDnsHelper(root._pendingExitNodeEnable, root.exitNodeDns)
       }
       root.settingExitNodeId = ""
       delayedRefresh.restart()
@@ -760,13 +791,19 @@ Item {
     onExited: function(exitCode) {
       var stdout = String(settingStdout.text || root._settingOutput || "")
       var stderr = String(settingStderr.text || root._settingError || "")
+      var requestedDnsMode = root._pendingDnsMode
       if (exitCode !== 0) {
         root.lastError = elideStatus(stderr || stdout || "Tailscale setting failed")
         root.actionStatus = root.lastError
         actionStatusTimer.restart()
       } else {
         root.lastError = ""
+        if (requestedDnsMode !== "") {
+          root.dnsModeAccepted(requestedDnsMode)
+          root.startDnsHelper(requestedDnsMode === "custom" && root.exitNodeActive, root.exitNodeDns)
+        }
       }
+      root._pendingDnsMode = ""
       root.changingSetting = ""
       delayedRefresh.restart()
     }

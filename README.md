@@ -24,6 +24,8 @@ the settings people commonly need from the official Tailscale clients.
 - Navigate by mouse or keyboard.
 - Optionally store a different systemd-resolved DNS server for each control
   server and switch it together with an exit node.
+- Choose exactly one DNS mode: Tailnet-provided DNS, exit-node custom DNS, or
+  local network DNS.
 
 ## Requirements
 
@@ -108,14 +110,15 @@ trust and that remains reachable while the chosen exit node is active.
 
 ## Multiple Tailnets and Headscale servers
 
-The always-visible **Tailnet & DNS** section near the top of the panel contains
-two editable fields, including while Tailscale is disconnected:
+The always-visible **Tailnet** section near the top of the panel contains the
+login-server field, including while Tailscale is disconnected. The custom DNS
+field sits directly below **Settings → DNS mode → Exit-node custom DNS**:
 
 1. **Tailnet login server** accepts an `http://` or `https://` control-server
    URL. The adjacent login button saves the URL and starts
    `tailscale login --login-server=<url>`. If browser authentication is needed,
    the panel opens the URL emitted by the local Tailscale CLI.
-2. **Exit node DNS for this login server** accepts an IPv4 or IPv6 resolver.
+2. **DNS server for this tailnet** accepts an IPv4 or IPv6 resolver.
    Saving it stores the resolver under the normalized control-server URL.
 
 Existing profiles remain available through the Connections section and
@@ -139,6 +142,12 @@ When configured, selecting an exit node keeps Tailscale's own DNS takeover off
 and assigns the configured resolver plus the `~.` route to `tailscale0`.
 Removing the exit node reverts `tailscale0`, allowing the current local network
 resolver to take over again.
+
+The three DNS modes are mutually exclusive. **Tailscale DNS** enables
+`accept-dns` and reverts the custom resolver. **Exit-node custom DNS** disables
+`accept-dns` and applies the per-server resolver only while an exit node is
+active. **Local network DNS** disables `accept-dns` and reverts the custom
+resolver. The panel never intentionally enables both DNS managers together.
 
 System DNS changes require privilege. Omarchy intentionally does not execute
 plugin install hooks or `sudo`, so the helper is never installed automatically.

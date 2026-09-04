@@ -26,6 +26,7 @@ Panel {
   property bool customDnsEditorOpen: false
   property string mullvadQuery: ""
   property string loginServerDraft: ""
+  property string switchServerDraft: ""
   property string exitNodeDnsDraft: ""
   property int phraseIndex: 0
   readonly property var activePhrases: [
@@ -224,6 +225,7 @@ Panel {
   function resetTailnetDrafts() {
     loginServerDraft = tailscale.controlUrl || tailscale.configuredLoginServer
     exitNodeDnsDraft = tailscale.exitNodeDns
+    switchServerDraft = ""
   }
 
   function saveTailnetProfile(startLogin) {
@@ -250,6 +252,19 @@ Panel {
     tailscale.lastError = ""
     tailscale.actionStatus = dns === "" ? "Tailnet profile saved" : "Tailnet DNS profile saved"
     if (startLogin === true) tailscale.loginToServer(server)
+  }
+
+  function switchTailnetFromDraft() {
+    var raw = String(switchServerDraft || "").trim()
+    var server = tailscale.normalizeControlUrlInput(raw)
+    if (server !== "" && !tailscale.isValidControlUrl(server)) {
+      tailscale.lastError = "Enter a valid http:// or https:// URL, or leave empty for official Tailscale"
+      return
+    }
+    // Remember the chosen control server as the default for the next fresh login.
+    updatePluginSettings({ loginServer: server !== "" ? server : "https://controlplane.tailscale.com" })
+    switchServerDraft = ""
+    tailscale.switchTailnet(server)
   }
 
   function chooseExitNode(peer) {
@@ -731,39 +746,46 @@ Panel {
 
             Text {
               width: parent.width
-              text: "LOGIN SERVER"
+              text: "SWITCH TO ANOTHER NETWORK"
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
             }
 
-            RowLayout {
+            TextField {
+              id: switchServerField
               width: parent.width
-              spacing: Style.space(6)
+              foreground: root.foreground
+              placeholderText: "https://headscale.example.com (empty = official)"
+              text: root.switchServerDraft
+              onTextChanged: root.switchServerDraft = text
+              onAccepted: root.switchTailnetFromDraft()
+            }
 
-              TextField {
-                id: loginServerField
-                Layout.fillWidth: true
-                foreground: root.foreground
-                placeholderText: "https://headscale.example.com"
-                text: root.loginServerDraft
-                onTextChanged: root.loginServerDraft = text
-                onAccepted: root.saveTailnetProfile(true)
-              }
+            Button {
+              width: parent.width
+              text: "Switch & authenticate"
+              iconText: "󰍂"
+              active: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              enabled: !tailscale.busy
+              onClicked: root.switchTailnetFromDraft()
+            }
 
-              PanelActionButton {
-                iconText: "󰍂"
-                tooltipText: "Save server and log in"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                enabled: !tailscale.busy
-                onClicked: root.saveTailnetProfile(true)
-              }
+            Text {
+              visible: tailscale.loginBusy && tailscale.loginProgress !== ""
+              width: parent.width
+              text: tailscale.loginProgress
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
 
             Text {
               width: parent.width
-              text: "Changing the login server starts a new Tailscale/Headscale login."
+              text: "Switching logs out of the current tailnet first, then opens the authentication page for the new server. Empty server = official Tailscale."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption

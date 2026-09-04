@@ -90,7 +90,6 @@ The plugin exposes these standard Omarchy widget settings:
 | Refresh interval | `30` seconds | Poll Tailscale status and preferences |
 | Switch DNS with exit node | Off | Run the optional DNS helper after exit-node changes |
 | Exit node DNS server | Empty | IPv4 or IPv6 resolver reachable through the exit node |
-| Privileged DNS helper | `/usr/local/libexec/omarchy-tailscale-plus-dns` | Root-owned helper path |
 | Login server URL | Tailscale's public control server | Server offered by the panel's login action |
 | Per-tailnet DNS map | `{}` | JSON map from normalized control-server URL to resolver address |
 
@@ -111,13 +110,18 @@ trust and that remains reachable while the chosen exit node is active.
 ## Multiple Tailnets and Headscale servers
 
 The always-visible **Tailnet** section near the top of the panel contains the
-login-server field, including while Tailscale is disconnected. The custom DNS
-field sits directly below **Settings → DNS mode → Exit-node custom DNS**:
+current control server and a switch field for entering another Headscale/Tailscale
+server. It is available even while Tailscale is
+disconnected. The custom DNS field sits directly below
+**Settings → DNS mode → Exit-node custom DNS**:
 
-1. **Tailnet login server** accepts an `http://` or `https://` control-server
-   URL. The adjacent login button saves the URL and starts
-   `tailscale login --login-server=<url>`. If browser authentication is needed,
-   the panel opens the URL emitted by the local Tailscale CLI.
+1. **Switch to another network** accepts an `http://` or `https://`
+   control-server URL, or nothing for official Tailscale. The action logs out
+   of the current tailnet first (required by Tailscale before it can bind to a
+   different control server), then starts
+   `tailscale up --login-server=<url>` (or plain `tailscale up` for
+   official Tailscale). If browser authentication is needed, the panel opens
+   the URL emitted by the local Tailscale CLI.
 2. **DNS server for this tailnet** accepts an IPv4 or IPv6 resolver.
    Saving it stores the resolver under the normalized control-server URL.
    The editor is integrated under **Exit-node custom DNS**: it expands when
@@ -181,10 +185,11 @@ The installer creates:
 - `/usr/local/libexec/omarchy-tailscale-plus-dns`, owned by root and mode `0755`.
 - `/etc/sudoers.d/omarchy-tailscale-plus-dns`, owned by root and mode `0440`.
 
-The sudo rule permits only that fixed helper's `on` and `off` actions. The
-helper accepts only the `tailscale0` interface, validates that the resolver is
-an IPv4 or IPv6 address, and performs fixed `resolvectl` operations. It cannot
-run an arbitrary shell command.
+The sudo rule permits only the fixed helper path with **no arguments**. The
+plugin sends a one-line `on <resolver>` / `off` request over stdin. The helper
+accepts only the `tailscale0` interface, validates that the resolver is a
+canonical IPv4 or IPv6 address with a strict length cap, and performs fixed
+`/usr/bin/resolvectl` operations. It cannot run an arbitrary shell command.
 
 Without the helper, all ordinary Tailscale controls continue working. If DNS
 switching is enabled without authorization, the panel reports an actionable

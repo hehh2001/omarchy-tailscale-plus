@@ -54,16 +54,35 @@ Item {
   property string operatorUser: ""
   property string controlUrl: ""
   property bool exitNodeActive: false
+  // Desired exit node for self-heal: if Tailscale is running but the chosen
+  // exit node disappears after a reconnect/idle, the next refresh reapplies it.
+  property string desiredExitNodeId: ""
+  property string desiredExitNodeTarget: ""
+  property double lastExitNodeSelfHealMs: 0
+  readonly property int exitNodeSelfHealBackoffMs: 30000
   property string changingSetting: ""
   readonly property bool manageExitNodeDns: setting("manageExitNodeDns", false) === true
   readonly property string configuredLoginServer: Model.normalizeControlUrl(setting("loginServer", "https://controlplane.tailscale.com"))
   readonly property string exitNodeDnsMap: String(setting("exitNodeDnsMap", "{}") || "{}")
   readonly property string exitNodeDns: Model.dnsForControlUrl(exitNodeDnsMap, controlUrl, setting("exitNodeDns", ""))
-  readonly property string dnsHelper: String(setting("dnsHelper", "/usr/local/libexec/omarchy-tailscale-plus-dns") || "")
+  // Fixed, reviewed root helper path. Never user-configurable.
+  readonly property string dnsHelperPath: "/usr/local/libexec/omarchy-tailscale-plus-dns"
   readonly property string dnsMode: Model.dnsMode(acceptDns, manageExitNodeDns)
 
+  // Trusted absolute executables. No runtime lookup through PATH.
+  readonly property string tailscaleBin: "/usr/bin/tailscale"
+  readonly property string timeoutBin: "/usr/bin/timeout"
+  readonly property string bashBin: "/usr/bin/bash"
+  readonly property string headBin: "/usr/bin/head"
+  readonly property string sudoBin: "/usr/bin/sudo"
+  readonly property string pkexecBin: "/usr/bin/pkexec"
+  readonly property string browserBin: Quickshell.env("OMARCHY_PATH") + "/bin/omarchy-launch-browser"
+  readonly property string taildropSendBin: Quickshell.env("OMARCHY_PATH") + "/bin/omarchy-tailscale-send"
+  readonly property string wlCopyBin: "/usr/bin/wl-copy"
+  readonly property string resolvectlBin: "/usr/bin/resolvectl"
+
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 30, 5, 3600)
-  readonly property bool busy: whichProcess.running || statusProcess.running || prefsProcess.running || mullvadExitNodesProcess.running || accountsProcess.running || actionProcess.running || loginProcess.running || switchProcess.running || operatorProcess.running || exitNodeProcess.running || settingProcess.running || dnsProcess.running
+  readonly property bool busy: whichProcess.running || statusProcess.running || prefsProcess.running || mullvadExitNodesProcess.running || accountsProcess.running || actionProcess.running || loginProcess.running || switchProcess.running || operatorProcess.running || exitNodeProcess.running || settingProcess.running || dnsProcess.running || logoutProcess.running
   readonly property string userName: Quickshell.env("USER") || Quickshell.env("LOGNAME")
 
   property string _statusOutput: ""
@@ -79,6 +98,9 @@ Item {
   property bool _loginInProgress: false
   property bool _loginUrlOpened: false
   property string _preLoginAuthUrl: ""
+  property string _loginProgressText: ""
+  readonly property bool loginBusy: loginProcess.running
+  readonly property string loginProgress: _loginProgressText
   property double _lastAccountsRefreshMs: 0
   property string _switchOutput: ""
   property string _switchError: ""
@@ -95,6 +117,43 @@ Item {
   property bool _pendingExitNodeEnable: false
   property string _pendingDnsMode: ""
   property string _pendingDnsResolver: ""
+  property string _logoutOutput: ""
+  property string _logoutError: ""
+  // Pending control-server switch: empty string means official Tailscale.
+  property string _pendingSwitchServer: ""
+  property bool _pendingSwitchActive: false
+  // If Tailscale operator is not authorized yet, authorize first, then continue
+  // with the login that triggered it (empty string means official Tailscale).
+  property string _pendingLoginAfterOperator: ""
+  property bool _pendingLoginAfterOperatorActive: false
+
+  // Build a read-only poll command that is bounded in time (timeout), stdout
+  // bytes (head -c) and stderr bytes (head -c via process substitution).
+  // Arguments here are fixed literals only; never pass user-controlled strings
+  // through this helper.
+  function cappedPollCommand(args, maxBytes, seconds) {
+    var timeout = seconds === undefined || seconds === null ? "20" : String(seconds)
+    var limit = String(maxBytes || 262144)
+    var joined = Array.isArray(args) ? args.join(" ") : String(args || "")
+    return [root.bashBin, "-c",
+      "exec " + root.timeoutBin + " " + timeout + " " + root.tailscaleBin + " " + joined
+        + " 2> >(exec " + root.headBin + " -c 65536 >&2)"
+        + " | " + root.headBin + " -c " + limit]
+  }
+
+  function boundedCommand(seconds, base, args) {
+    var list = [root.timeoutBin, String(seconds === undefined || seconds === null ? 15 : seconds), base]
+    if (Array.isArray(args)) list = list.concat(args)
+    return list
+  }
+
+  function stopProcess(proc) {
+    if (!proc || !proc.running) return
+    try {
+      proc.signal(15) // SIGTERM; commands are also wrapped with timeout as a second layer.
+    } catch (e) { /* ignore */ }
+    proc.running = false
+  }
 
   signal dnsModeAccepted(string mode)
 
@@ -138,7 +197,7 @@ Item {
   function copyToClipboard(value, label) {
     var text = String(value || "")
     if (text === "") return
-    Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(text) + " | wl-copy"])
+    Quickshell.execDetached([root.bashBin, "-c", "printf %s " + Util.shellQuote(text) + " | " + root.wlCopyBin])
   }
 
   function copyPeerIp(peer) {
@@ -174,7 +233,7 @@ Item {
     if (!canSendFiles(peer)) return
     var target = peerAddress(peer)
     if (target === "") return
-    Quickshell.execDetached(["omarchy-tailscale-send", target])
+    Quickshell.execDetached([root.taildropSendBin, target])
   }
 
   function refresh(forceAccounts) {
@@ -184,7 +243,7 @@ Item {
     }
     if (!whichProcess.running) {
       refreshing = true
-      whichProcess.command = ["which", "tailscale"]
+      whichProcess.command = ["/usr/bin/test", "-x", root.tailscaleBin]
       whichProcess.running = true
     }
   }
@@ -196,21 +255,21 @@ Item {
       _statusOutput = ""
       _statusError = ""
       refreshing = true
-      statusProcess.command = ["tailscale", "status", "--json"]
+      statusProcess.command = root.cappedPollCommand(["status", "--json"], Model.MAX_STATUS_INPUT, 20)
       statusProcess.running = true
       launched = true
     }
     if (!prefsProcess.running) {
       _prefsOutput = ""
       _prefsError = ""
-      prefsProcess.command = ["tailscale", "debug", "prefs"]
+      prefsProcess.command = root.cappedPollCommand(["debug", "prefs"], Model.MAX_PREFS_INPUT, 20)
       prefsProcess.running = true
       launched = true
     }
     if (!mullvadExitNodesProcess.running) {
       _mullvadExitNodesOutput = ""
       _mullvadExitNodesError = ""
-      mullvadExitNodesProcess.command = ["tailscale", "exit-node", "list"]
+      mullvadExitNodesProcess.command = root.cappedPollCommand(["exit-node", "list"], Model.MAX_EXIT_NODE_LIST_INPUT, 20)
       mullvadExitNodesProcess.running = true
       launched = true
     }
@@ -220,7 +279,7 @@ Item {
       _accountsOutput = ""
       _accountsError = ""
       _lastAccountsRefreshMs = now
-      accountsProcess.command = ["tailscale", "switch", "--list", "--json"]
+      accountsProcess.command = root.cappedPollCommand(["switch", "--list", "--json"], Model.MAX_ACCOUNTS_INPUT, 20)
       accountsProcess.running = true
       launched = true
     }
@@ -333,6 +392,7 @@ Item {
     operatorUser = parsed.operatorUser
     controlUrl = parsed.controlUrl
     exitNodeActive = parsed.exitNodeActive
+    Qt.callLater(function() { root.maybeRestoreExitNode() })
   }
 
   function setBooleanPreference(key, flag, value) {
@@ -340,7 +400,7 @@ Item {
     changingSetting = String(key || "")
     _settingOutput = ""
     _settingError = ""
-    settingProcess.command = ["tailscale", "set", "--" + flag + "=" + (value ? "true" : "false")]
+    settingProcess.command = root.boundedCommand(15, root.tailscaleBin, ["set", "--" + flag + "=" + (value ? "true" : "false")])
     settingProcess.running = true
   }
 
@@ -355,22 +415,41 @@ Item {
       actionStatusTimer.restart()
       return
     }
+    if (next === "custom" && !Model.isValidDnsAddress(requestedResolver)) {
+      lastError = "Exit-node DNS must be a canonical IPv4 or IPv6 address"
+      actionStatus = lastError
+      actionStatusTimer.restart()
+      return
+    }
     changingSetting = "dnsMode"
     _pendingDnsMode = next
     _pendingDnsResolver = requestedResolver
     _settingOutput = ""
     _settingError = ""
-    settingProcess.command = ["tailscale", "set", "--accept-dns=" + (next === "tailscale" ? "true" : "false")]
+    settingProcess.command = root.boundedCommand(15, root.tailscaleBin, ["set", "--accept-dns=" + (next === "tailscale" ? "true" : "false")])
     settingProcess.running = true
   }
 
   function startDnsHelper(enable, resolver) {
-    if (dnsProcess.running || dnsHelper === "") return
+    if (dnsProcess.running) return
     var dns = resolver === undefined || resolver === null ? String(exitNodeDns || "") : String(resolver || "")
-    if (enable && dns === "") return
     _dnsOutput = ""
     _dnsError = ""
-    dnsProcess.command = ["sudo", "-n", dnsHelper, enable ? "on" : "off", enable ? dns : "_", "tailscale0"]
+    if (enable) {
+      if (dns === "") return
+      if (!Model.isValidDnsAddress(dns)) {
+        lastError = "Exit-node DNS must be a canonical IPv4 or IPv6 address"
+        actionStatus = lastError
+        actionStatusTimer.restart()
+        return
+      }
+      dnsProcess.request = "on " + dns + "\n"
+    } else {
+      dnsProcess.request = "off\n"
+    }
+    // No argv: the sudoers rule allows the fixed helper path with no arguments
+    // and the action/resolver arrive on stdin.
+    dnsProcess.command = root.boundedCommand(15, root.sudoBin, ["-n", root.dnsHelperPath])
     dnsProcess.running = true
   }
 
@@ -389,16 +468,40 @@ Item {
   function toggleAutoUpdate() { setBooleanPreference("autoUpdate", "auto-update", !autoUpdate) }
   function toggleReportPosture() { setBooleanPreference("reportPosture", "report-posture", !reportPosture) }
   function normalizeControlUrl(value) { return Model.normalizeControlUrl(value) }
+  function normalizeControlUrlInput(value) { return Model.normalizeControlUrlInput(value) }
   function isValidControlUrl(value) { return Model.isValidControlUrl(value) }
   function isValidDnsAddress(value) { return Model.isValidDnsAddress(value) }
 
-  function loginToServer(value) {
-    var server = Model.normalizeControlUrl(value)
-    if (!installed || loginProcess.running) return false
-    if (!Model.isValidControlUrl(server)) {
+  function loginArgsForServer(server) {
+    var normalized = Model.normalizeControlUrlInput(server)
+    // Use `up`, not `login`: after logout the `up` command prints the browser
+    // auth URL (or connects immediately when an authkey is already valid).
+    // `tailscale login` can authenticate silently without emitting a URL,
+    // which is why the official page did not open.
+    var args = ["up"]
+    if (normalized !== "") args.push("--login-server=" + normalized)
+    args.push("--accept-dns=" + (dnsMode === "tailscale" ? "true" : "false"))
+    args.push("--accept-routes=" + (acceptRoutes ? "true" : "false"))
+    args.push("--operator=" + userName)
+    return args
+  }
+
+  function startLoginForServer(server) {
+    var normalized = Model.normalizeControlUrlInput(server)
+    if (normalized !== "" && !Model.isValidControlUrl(normalized)) {
       lastError = "Login server must be a valid http:// or https:// URL"
       actionStatus = lastError
       actionStatusTimer.restart()
+      return false
+    }
+    // `tailscale up` needs the operator privilege unless it is run as root.
+    // If the current user is not the operator yet, authorize through pkexec
+    // first and continue with this login after the polkit prompt succeeds.
+    if (operatorUser !== userName && !operatorProcess.running && !loginProcess.running && !logoutProcess.running) {
+      _pendingLoginAfterOperator = normalized
+      _pendingLoginAfterOperatorActive = true
+      actionStatus = "Authorizing Tailscale operator to start login…"
+      authorizeTailscaleOperator()
       return false
     }
     _loginOutput = ""
@@ -406,17 +509,85 @@ Item {
     _loginInProgress = true
     _loginUrlOpened = false
     _preLoginAuthUrl = authUrl
-    actionStatus = "Starting login for " + server + "…"
-    loginProcess.command = [
-      "tailscale", "login",
-      "--login-server=" + server,
-      "--accept-dns=" + (dnsMode === "tailscale" ? "true" : "false"),
-      "--accept-routes=" + (acceptRoutes ? "true" : "false"),
-      "--operator=" + userName
-    ]
+    actionStatus = normalized === ""
+      ? "Starting official Tailscale login…"
+      : "Starting login for " + normalized + "…"
+    _loginProgressText = normalized === ""
+      ? "Connecting to official Tailscale control server…"
+      : "Connecting to " + normalized + "…"
+    loginProcess.command = root.boundedCommand(600, root.tailscaleBin, root.loginArgsForServer(normalized))
     loginProcess.running = true
     loginTimeoutTimer.restart()
     return true
+  }
+
+  function loginToServer(value) {
+    if (!installed || loginProcess.running || logoutProcess.running) return false
+    return startLoginForServer(value)
+  }
+
+  function clearPendingExitNodeState() {
+    desiredExitNodeId = ""
+    desiredExitNodeTarget = ""
+    lastExitNodeSelfHealMs = 0
+  }
+
+  function cancelPendingLogin() {
+    _loginInProgress = false
+    _loginUrlOpened = true
+    _loginProgressText = ""
+    loginTimeoutTimer.stop()
+    root.stopProcess(root.loginProcess)
+    _pendingLoginAfterOperator = ""
+    _pendingLoginAfterOperatorActive = false
+  }
+
+  // Switch to a different control server. Empty `value` means official
+  // Tailscale (no --login-server). Tailscale requires logging out before it
+  // can bind to another control server, so we chain logout → login.
+  function switchTailnet(value) {
+    var normalized = Model.normalizeControlUrlInput(value)
+    if (!installed) return false
+    if (logoutProcess.running) return false
+    // If the user is switching again while a previous login is still waiting
+    // for browser auth, cancel that login first so the click is not ignored.
+    if (loginProcess.running) cancelPendingLogin()
+    if (normalized !== "" && !Model.isValidControlUrl(normalized)) {
+      lastError = "Login server must be a valid http:// or https:// URL"
+      actionStatus = lastError
+      actionStatusTimer.restart()
+      return false
+    }
+
+    clearPendingExitNodeState()
+    _pendingSwitchServer = normalized
+    _pendingSwitchActive = true
+    _logoutOutput = ""
+    _logoutError = ""
+
+    // A machine already bound to a control server (even if tailscaled is
+    // stopped) must log out first; otherwise login stays bound to the old one.
+    // needsLogin means there is no active session to log out from.
+    if (running || (!needsLogin && controlUrl !== "")) {
+      actionStatus = normalized === ""
+        ? "Logging out, then switching to official Tailscale…"
+        : "Logging out, then switching to " + normalized + "…"
+      logoutProcess.command = root.boundedCommand(30, root.tailscaleBin, ["logout"])
+      logoutProcess.running = true
+    } else {
+      _pendingSwitchActive = false
+      _pendingSwitchServer = ""
+      return startLoginForServer(normalized)
+    }
+    return true
+  }
+
+  function continuePendingSwitch() {
+    if (!_pendingSwitchActive) return
+    _pendingSwitchActive = false
+    var server = _pendingSwitchServer
+    _pendingSwitchServer = ""
+    startLoginForServer(server)
   }
 
   function parseMullvadExitNodes(raw) {
@@ -435,7 +606,7 @@ Item {
     // No progress status here — the greyed icon and hero line already convey
     // the optimistic off; only surface a message if the command fails.
     _desired = 0
-    runAction(["tailscale", "down"])
+    runAction([root.tailscaleBin, "down"])
   }
 
   function loginOrUp() {
@@ -454,7 +625,8 @@ Item {
     _loginInProgress = needsLogin
     _loginUrlOpened = false
     _preLoginAuthUrl = authUrl
-    loginProcess.command = plan.command
+    var upArgs = plan.command.length > 1 ? plan.command.slice(1) : ["up"]
+    loginProcess.command = root.boundedCommand(30, root.tailscaleBin, upArgs)
     loginProcess.running = true
     if (needsLogin) loginTimeoutTimer.restart()
   }
@@ -470,7 +642,7 @@ Item {
     _switchOutput = ""
     _switchError = ""
     switchingAccountId = accountId
-    switchProcess.command = ["tailscale", "switch", accountId]
+    switchProcess.command = root.boundedCommand(20, root.tailscaleBin, ["switch", accountId])
     switchProcess.running = true
   }
 
@@ -487,12 +659,45 @@ Item {
     if (!installed || !running || !peer || exitNodeProcess.running) return
     var target = exitNodeTarget(peer)
     if (target === "" || peer.ExitNode === true) return
-    changeExitNode(target, true, String(peer.id || target))
+    desiredExitNodeId = String(peer.id || target)
+    desiredExitNodeTarget = target
+    lastExitNodeSelfHealMs = Date.now()
+    changeExitNode(target, true, desiredExitNodeId)
   }
 
   function clearExitNode() {
     if (!installed || !running || exitNodeProcess.running || !exitNodeActive) return
+    desiredExitNodeId = ""
+    desiredExitNodeTarget = ""
+    lastExitNodeSelfHealMs = 0
     changeExitNode("", false, "exit:none")
+  }
+
+  function findExitNodePeer(id) {
+    var wanted = String(id || "")
+    if (wanted === "") return null
+    var pools = [tailnetExitNodes, mullvadRegions, peers]
+    for (var p = 0; p < pools.length; p++) {
+      var list = Array.isArray(pools[p]) ? pools[p] : []
+      for (var i = 0; i < list.length; i++) {
+        var item = list[i] || {}
+        if (String(item.id || "") === wanted) return item
+      }
+    }
+    return null
+  }
+
+  // After an idle timeout/reconnect Tailscale may come back without the exit
+  // node route. Reapply the user's last selection on a later refresh (throttled).
+  function maybeRestoreExitNode() {
+    if (!installed || !running || desiredExitNodeId === "") return
+    if (exitNodeActive || exitNodeProcess.running || settingProcess.running) return
+    var now = Date.now()
+    if (now - lastExitNodeSelfHealMs < exitNodeSelfHealBackoffMs) return
+    lastExitNodeSelfHealMs = now
+    var peer = findExitNodePeer(desiredExitNodeId)
+    var target = peer ? exitNodeTarget(peer) : desiredExitNodeTarget
+    if (target !== "") changeExitNode(target, true, desiredExitNodeId)
   }
 
   function changeExitNode(target, enable, id) {
@@ -500,12 +705,12 @@ Item {
     _exitNodeError = ""
     settingExitNodeId = String(id || "")
     _pendingExitNodeEnable = enable === true
-    var command = ["tailscale", "set", "--exit-node=" + target]
+    var args = ["set", "--exit-node=" + target]
     // Custom exit-node DNS and Tailscale-managed DNS are mutually exclusive.
     // Keep accept-dns disabled after disconnect as well so the local uplink
     // resolver can take over when the helper reverts tailscale0.
-    if (dnsMode === "custom") command.push("--accept-dns=false")
-    exitNodeProcess.command = command
+    if (dnsMode === "custom") args.push("--accept-dns=false")
+    exitNodeProcess.command = root.boundedCommand(20, root.tailscaleBin, args)
     exitNodeProcess.running = true
   }
 
@@ -514,7 +719,7 @@ Item {
     _operatorOutput = ""
     _operatorError = ""
     actionStatus = "Authorizing Tailscale operator..."
-    operatorProcess.command = ["pkexec", "tailscale", "set", "--operator=" + userName]
+    operatorProcess.command = root.boundedCommand(60, root.pkexecBin, [root.tailscaleBin, "set", "--operator=" + userName])
     operatorProcess.running = true
   }
 
@@ -523,7 +728,7 @@ Item {
     _actionOutput = ""
     _actionError = ""
     actionStatus = label || ""
-    actionProcess.command = command
+    actionProcess.command = root.boundedCommand(20, command[0], command.slice(1))
     actionProcess.running = true
   }
 
@@ -537,7 +742,8 @@ Item {
       _loginUrlOpened = true
       _loginInProgress = false
       loginTimeoutTimer.stop()
-      Quickshell.execDetached(["omarchy-launch-browser", url])
+      _loginProgressText = "Authentication page opened — complete sign-in in the browser…"
+      Quickshell.execDetached([root.browserBin, url])
       return true
     }
     return false
@@ -588,13 +794,19 @@ Item {
     // silently stops the panel refreshing at all, and it stays stopped. Reap
     // anything still running well inside the refresh interval so the next tick
     // starts clean.
+    //
+    // This watchdog intentionally covers only the recurring poll processes.
+    // Action/login/logout/switch processes already carry their own `timeout`
+    // wrapper and must not be killed by a 15s refresh watchdog (e.g. browser
+    // authentication can legitimately take longer than 15 seconds).
     id: pollWatchdog
     interval: 15000
     repeat: false
     onTriggered: {
-      if (statusProcess.running) statusProcess.running = false
-      if (mullvadExitNodesProcess.running) mullvadExitNodesProcess.running = false
-      if (accountsProcess.running) accountsProcess.running = false
+      root.stopProcess(statusProcess)
+      root.stopProcess(prefsProcess)
+      root.stopProcess(mullvadExitNodesProcess)
+      root.stopProcess(accountsProcess)
     }
   }
 
@@ -611,9 +823,11 @@ Item {
     repeat: false
     onTriggered: {
       if (!root._loginInProgress || root._loginUrlOpened) return
+      // Do not kill `tailscale up` here: the command has its own 600s timeout.
+      // Just surface that the control server is slow/unreachable so the user
+      // sees progress instead of thinking the click did nothing.
       if (!root.openAuthUrlFrom(root.authUrl, true)) {
-        root._loginInProgress = false
-        root.actionStatus = "Tailscale login link not available yet"
+        root._loginProgressText = "Control server is not responding yet — still trying (up to 10 minutes)…"
       }
     }
   }
@@ -733,12 +947,46 @@ Item {
       if (exitCode !== 0 && !opened) {
         root._desired = -1
         root._loginInProgress = false
-        root.lastError = elideStatus(combined || "tailscale up failed")
+        root._loginProgressText = ""
+        var detail = combined || "tailscale up failed"
+        if (exitCode === 124 || /timed out|context canceled/i.test(detail)) {
+          detail = "Could not reach the control server or the login timed out"
+        }
+        root.lastError = elideStatus(detail)
         root.actionStatus = root.lastError
         actionStatusTimer.restart()
       } else if (!opened) {
         root.lastError = ""
         root.actionStatus = ""
+        root._loginProgressText = ""
+      } else if (exitCode === 0) {
+        // Authentication completed and tailscale up exited successfully.
+        root._loginProgressText = ""
+      }
+      delayedRefresh.restart()
+    }
+  }
+
+  Process {
+    id: logoutProcess
+    running: false
+    command: []
+    stdout: StdioCollector { id: logoutStdout; waitForEnd: true; onStreamFinished: root._logoutOutput = text }
+    stderr: StdioCollector { id: logoutStderr; waitForEnd: true; onStreamFinished: root._logoutError = text }
+    onExited: function(exitCode) {
+      var stdout = String(logoutStdout.text || root._logoutOutput || "")
+      var stderr = String(logoutStderr.text || root._logoutError || "")
+      if (exitCode !== 0) {
+        root.lastError = elideStatus(stderr || stdout || "Tailscale logout failed")
+        root.actionStatus = root.lastError
+        actionStatusTimer.restart()
+        root._pendingSwitchActive = false
+        root._pendingSwitchServer = ""
+      } else {
+        root.lastError = ""
+        root.actionStatus = ""
+        root._lastAccountsRefreshMs = 0
+        if (root._pendingSwitchActive) root.continuePendingSwitch()
       }
       delayedRefresh.restart()
     }
@@ -828,6 +1076,12 @@ Item {
     id: dnsProcess
     running: false
     command: []
+    property string request: ""
+    stdinEnabled: true
+    onStarted: {
+      write(request)
+      request = ""
+    }
     stdout: StdioCollector { id: dnsStdout; waitForEnd: true; onStreamFinished: root._dnsOutput = text }
     stderr: StdioCollector { id: dnsStderr; waitForEnd: true; onStreamFinished: root._dnsError = text }
     onExited: function(exitCode) {
@@ -857,12 +1111,21 @@ Item {
         root.lastError = elideStatus(stderr || stdout || "Tailscale authorization failed")
         root.actionStatus = root.lastError
         actionStatusTimer.restart()
+        root._pendingLoginAfterOperator = ""
+        root._pendingLoginAfterOperatorActive = false
       } else {
         root.accountsAccessDenied = false
+        root.operatorUser = root.userName
         root.lastError = ""
         root.actionStatus = "Tailscale operator authorized"
         actionStatusTimer.restart()
         root._lastAccountsRefreshMs = 0
+        if (root._pendingLoginAfterOperatorActive) {
+          var server = root._pendingLoginAfterOperator
+          root._pendingLoginAfterOperator = ""
+          root._pendingLoginAfterOperatorActive = false
+          root.startLoginForServer(server)
+        }
       }
       delayedRefresh.restart()
     }

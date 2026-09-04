@@ -1,7 +1,47 @@
+// Hard limits for hostile/oversized Tailscale output. JSON parsing happens
+// only after these bounds are enforced by the calling layer; these constants
+// are shared with QML for display/error messages and with Node tests.
+var MAX_STATUS_INPUT = 1048576      // 1 MiB
+var MAX_ACCOUNTS_INPUT = 262144     // 256 KiB
+var MAX_PREFS_INPUT = 65536         // 64 KiB
+var MAX_EXIT_NODE_LIST_INPUT = 262144
+var MAX_PEERS = 20000
+var MAX_EXIT_NODES = 5000
+var MAX_ACCOUNTS = 200
+var MAX_MULLVAD_NODES = 5000
+var MAX_STRING_LENGTH = 4096
+var MAX_IP_LIST = 16
+var MAX_TAGS = 256
+
+function capString(value, max) {
+  var text = String(value || "")
+  var limit = max === undefined || max === null ? MAX_STRING_LENGTH : Number(max)
+  if (text.length > limit) text = text.substring(0, limit)
+  return text
+}
+
+function capStringArray(value, max) {
+  var list = Array.isArray(value) ? value : []
+  var limit = max === undefined || max === null ? MAX_IP_LIST : Number(max)
+  if (list.length > limit) list = list.slice(0, limit)
+  var result = []
+  for (var i = 0; i < list.length; i++) result.push(capString(list[i]))
+  return result
+}
+
+function capTags(value) {
+  var list = Array.isArray(value) ? value : []
+  if (list.length > MAX_TAGS) list = list.slice(0, MAX_TAGS)
+  var result = []
+  for (var i = 0; i < list.length; i++) result.push(capString(list[i], MAX_STRING_LENGTH))
+  return result
+}
+
 function filterIPv4(ips) {
   var result = []
   if (!ips || typeof ips.length !== "number") return result
-  for (var i = 0; i < ips.length; i++) {
+  var limit = Math.min(ips.length, MAX_IP_LIST)
+  for (var i = 0; i < limit; i++) {
     var ip = String(ips[i] || "")
     if (/^100\./.test(ip)) result.push(ip)
   }
@@ -11,7 +51,8 @@ function filterIPv4(ips) {
 function filterIPv6(ips) {
   var result = []
   if (!ips || typeof ips.length !== "number") return result
-  for (var i = 0; i < ips.length; i++) {
+  var limit = Math.min(ips.length, MAX_IP_LIST)
+  for (var i = 0; i < limit; i++) {
     var ip = String(ips[i] || "")
     if (/^fd7a:115c:a1e0:/i.test(ip)) result.push(ip)
   }
@@ -98,17 +139,17 @@ function isTaildropTarget(peer, selfUserId) {
 
 function peerFromStatus(id, peer) {
   return {
-    id: id,
-    HostName: displayHostName(peer.HostName, peer.DNSName),
-    UserID: String(peer.UserID || ""),
+    id: capString(id),
+    HostName: displayHostName(capString(peer.HostName), capString(peer.DNSName)),
+    UserID: capString(peer.UserID),
     TaildropTarget: typeof peer.TaildropTarget === "number" ? peer.TaildropTarget : 0,
-    DNSName: cleanDnsName(peer.DNSName),
-    DisplayName: displayHostName(peer.HostName, peer.DNSName),
+    DNSName: cleanDnsName(capString(peer.DNSName)),
+    DisplayName: displayHostName(capString(peer.HostName), capString(peer.DNSName)),
     TailscaleIPs: filterIPv4(peer.TailscaleIPs || []),
     TailscaleIPv6: filterIPv6(peer.TailscaleIPs || []),
     Online: peer.Online === true,
-    OS: String(peer.OS || ""),
-    Tags: peer.Tags || [],
+    OS: capString(peer.OS, 128),
+    Tags: capTags(peer.Tags),
     ExitNodeOption: peer.ExitNodeOption === true,
     ExitNode: peer.ExitNode === true,
     Mullvad: isMullvadPeer(peer)
@@ -123,7 +164,9 @@ function sliceTableColumn(line, start, end) {
 }
 
 function parseExitNodeList(raw) {
-  var lines = String(raw || "").split(/\r?\n/)
+  var text = String(raw || "")
+  if (text.length > MAX_EXIT_NODE_LIST_INPUT) return []
+  var lines = text.split(/\r?\n/)
   var header = ""
   var headerIndex = -1
   for (var i = 0; i < lines.length; i++) {
@@ -143,6 +186,7 @@ function parseExitNodeList(raw) {
   var byHost = {}
 
   for (var j = headerIndex + 1; j < lines.length; j++) {
+    if (Object.keys(byHost).length >= MAX_MULLVAD_NODES) break
     var line = lines[j]
     if (/^\s*$/.test(line) || /^\s*#/.test(line)) continue
 
@@ -155,10 +199,10 @@ function parseExitNodeList(raw) {
 
     byHost[host] = {
       id: "mullvad:" + host,
-      HostName: host,
-      DNSName: host,
-      DisplayName: (city && city !== "Any" ? city + ", " : "") + country,
-      TailscaleIPs: ip ? [ip] : [],
+      HostName: capString(host),
+      DNSName: capString(host),
+      DisplayName: capString((city && city !== "Any" ? city + ", " : "") + country),
+      TailscaleIPs: ip ? [capString(ip, 64)] : [],
       TailscaleIPv6: [],
       Online: true,
       OS: "mullvad",
@@ -166,9 +210,9 @@ function parseExitNodeList(raw) {
       ExitNodeOption: true,
       ExitNode: status !== "" && status !== "-",
       Mullvad: true,
-      Country: country,
-      City: city,
-      Status: status
+      Country: capString(country, 128),
+      City: capString(city, 128),
+      Status: capString(status, 64)
     }
   }
 
@@ -223,6 +267,7 @@ function mullvadCountryOptions(nodes) {
 function parseStatus(raw) {
   var text = String(raw || "").trim()
   if (text === "") return { ok: true, unavailable: true, message: "Disconnected" }
+  if (text.length > MAX_STATUS_INPUT) return { ok: false, unavailable: true, message: "Status error", error: "Tailscale status output exceeded the safety limit" }
 
   try {
     var data = JSON.parse(text)
@@ -234,6 +279,9 @@ function parseStatus(raw) {
     var rawPeers = data.Peer || {}
 
     for (var id in rawPeers) {
+      if (peers.length >= MAX_PEERS || exitNodes.length >= MAX_EXIT_NODES) {
+        return { ok: false, unavailable: true, message: "Status error", error: "Tailscale status exceeded peer/exit-node safety limits" }
+      }
       var peer = rawPeers[id] || {}
       var normalized = peerFromStatus(id, peer)
       if (normalized.Mullvad) continue
@@ -253,14 +301,14 @@ function parseStatus(raw) {
     return {
       ok: true,
       unavailable: false,
-      backendState: backendState,
+      backendState: capString(backendState, 128),
       running: backendState === "Running",
       needsLogin: backendState === "NeedsLogin",
-      authUrl: String(data.AuthURL || ""),
-      selfName: displayHostName(self.HostName, self.DNSName),
-      selfDnsName: cleanDnsName(self.DNSName),
+      authUrl: capString(data.AuthURL, 1024),
+      selfName: displayHostName(capString(self.HostName), capString(self.DNSName)),
+      selfDnsName: cleanDnsName(capString(self.DNSName)),
       selfIp: selfIps.length > 0 ? selfIps[0] : "",
-      selfUserId: String(self.UserID || ""),
+      selfUserId: capString(self.UserID, 128),
       fileSharing: hasFileSharing(self),
       peers: peers,
       exitNodes: exitNodes
@@ -273,19 +321,20 @@ function parseStatus(raw) {
 function parseAccounts(raw) {
   var text = String(raw || "").trim()
   if (text === "") return { accounts: [], selectedAccountId: "", selectedAccountLabel: "" }
+  if (text.length > MAX_ACCOUNTS_INPUT) return { accounts: [], selectedAccountId: "", selectedAccountLabel: "" }
 
   try {
     var parsed = JSON.parse(text)
     var next = []
     var selected = null
     if (parsed && typeof parsed.length === "number") {
-      for (var i = 0; i < parsed.length; i++) {
+      for (var i = 0; i < parsed.length && next.length < MAX_ACCOUNTS; i++) {
         var rawAccount = parsed[i] || {}
         var account = {
-          id: String(rawAccount.id || rawAccount.ID || ""),
-          nickname: String(rawAccount.nickname || rawAccount.Nickname || rawAccount.name || rawAccount.Name || ""),
-          tailnet: String(rawAccount.tailnet || rawAccount.Tailnet || ""),
-          account: String(rawAccount.account || rawAccount.Account || rawAccount.loginName || rawAccount.LoginName || rawAccount.user || rawAccount.User || ""),
+          id: capString(rawAccount.id || rawAccount.ID, 512),
+          nickname: capString(rawAccount.nickname || rawAccount.Nickname || rawAccount.name || rawAccount.Name),
+          tailnet: capString(rawAccount.tailnet || rawAccount.Tailnet),
+          account: capString(rawAccount.account || rawAccount.Account || rawAccount.loginName || rawAccount.LoginName || rawAccount.user || rawAccount.User),
           selected: rawAccount.selected === true || rawAccount.Selected === true
         }
         next.push(account)
@@ -305,6 +354,7 @@ function parseAccounts(raw) {
 function parsePrefs(raw) {
   var text = String(raw || "").trim()
   if (text === "") return { ok: false, error: "Empty Tailscale preferences" }
+  if (text.length > MAX_PREFS_INPUT) return { ok: false, error: "Tailscale preferences output exceeded the safety limit" }
   try {
     var data = JSON.parse(text)
     var autoUpdate = data.AutoUpdate || {}
@@ -322,10 +372,10 @@ function parsePrefs(raw) {
       updateCheck: autoUpdate.Check === true,
       autoUpdate: autoUpdate.Apply === true,
       reportPosture: data.PostureChecking === true,
-      hostname: String(data.Hostname || ""),
-      operatorUser: String(data.OperatorUser || ""),
-      controlUrl: normalizeControlUrl(data.ControlURL || ""),
-      exitNodeId: String(data.ExitNodeID || ""),
+      hostname: capString(data.Hostname),
+      operatorUser: capString(data.OperatorUser, 256),
+      controlUrl: normalizeControlUrl(capString(data.ControlURL, 2048)),
+      exitNodeId: capString(data.ExitNodeID, 512),
       exitNodeActive: String(data.ExitNodeID || "") !== ""
     }
   } catch (e) {
@@ -339,6 +389,14 @@ function normalizeControlUrl(value) {
   return text
 }
 
+function normalizeControlUrlInput(value) {
+  var text = String(value || "").trim()
+  if (text === "") return ""
+  // Convenience: allow users to type headscale.example.com without a scheme.
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(text)) text = "https://" + text
+  return normalizeControlUrl(text)
+}
+
 function isValidControlUrl(value) {
   var text = normalizeControlUrl(value)
   return /^https?:\/\/[^\s/]+(?::[0-9]{1,5})?(?:\/[^\s]*)?$/.test(text)
@@ -346,12 +404,19 @@ function isValidControlUrl(value) {
 
 function isValidDnsAddress(value) {
   var text = String(value || "").trim()
-  if (/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(text)) {
-    var parts = text.split(".")
-    for (var i = 0; i < parts.length; i++) if (parseInt(parts[i], 10) > 255) return false
-    return true
-  }
-  return /^[0-9a-fA-F:]+$/.test(text) && text.indexOf(":") !== -1
+  if (text.length === 0 || text.length > 45) return false
+
+  var ipv4 = /^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$/
+  if (ipv4.test(text)) return true
+
+  // IPv6: hex digits and colons only, no zone/prefix, sane length.
+  if (text.indexOf(":") === -1 || !/^[0-9a-fA-F:]+$/.test(text)) return false
+  var doubleColon = text.indexOf("::")
+  if (doubleColon !== -1 && text.indexOf("::", doubleColon + 2) !== -1) return false
+  if (doubleColon === -1 && (text.charAt(0) === ":" || text.charAt(text.length - 1) === ":")) return false
+  var groups = text.split(":")
+  var colons = groups.length - 1
+  return colons >= 2 && colons <= 7
 }
 
 function parseDnsMap(raw) {
@@ -377,6 +442,18 @@ function dnsMode(acceptDns, manageExitNodeDns) {
 
 if (typeof module !== "undefined") {
   module.exports = {
+    MAX_STATUS_INPUT: MAX_STATUS_INPUT,
+    MAX_ACCOUNTS_INPUT: MAX_ACCOUNTS_INPUT,
+    MAX_PREFS_INPUT: MAX_PREFS_INPUT,
+    MAX_EXIT_NODE_LIST_INPUT: MAX_EXIT_NODE_LIST_INPUT,
+    MAX_PEERS: MAX_PEERS,
+    MAX_EXIT_NODES: MAX_EXIT_NODES,
+    MAX_ACCOUNTS: MAX_ACCOUNTS,
+    MAX_MULLVAD_NODES: MAX_MULLVAD_NODES,
+    MAX_STRING_LENGTH: MAX_STRING_LENGTH,
+    capString: capString,
+    capStringArray: capStringArray,
+    capTags: capTags,
     filterIPv4: filterIPv4,
     filterIPv6: filterIPv6,
     cleanDnsName: cleanDnsName,
@@ -396,6 +473,7 @@ if (typeof module !== "undefined") {
     parseAccounts: parseAccounts,
     parsePrefs: parsePrefs,
     normalizeControlUrl: normalizeControlUrl,
+    normalizeControlUrlInput: normalizeControlUrlInput,
     isValidControlUrl: isValidControlUrl,
     isValidDnsAddress: isValidDnsAddress,
     parseDnsMap: parseDnsMap,

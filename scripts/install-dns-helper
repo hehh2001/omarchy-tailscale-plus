@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-plugin_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+plugin_dir=$(/usr/bin/dirname -- "${BASH_SOURCE[0]}")/..
+plugin_dir=$(cd -- "$plugin_dir" && pwd)
 helper=/usr/local/libexec/omarchy-tailscale-plus-dns
 sudoers=/etc/sudoers.d/omarchy-tailscale-plus-dns
 target_user="${SUDO_USER:-${USER:-}}"
@@ -11,13 +12,13 @@ target_user="${SUDO_USER:-${USER:-}}"
   exit 64
 }
 
-sudo install -d -m 0755 /usr/local/libexec
-sudo install -o root -g root -m 0755 "$plugin_dir/scripts/omarchy-tailscale-plus-dns" "$helper"
+/usr/bin/sudo /usr/bin/install -d -m 0755 /usr/local/libexec
+/usr/bin/sudo /usr/bin/install -o root -g root -m 0755 "$plugin_dir/scripts/omarchy-tailscale-plus-dns" "$helper"
 
-tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT
-printf '%s ALL=(root) NOPASSWD: %s on *, %s off *\n' "$target_user" "$helper" "$helper" >"$tmp"
-sudo visudo -cf "$tmp"
-sudo install -o root -g root -m 0440 "$tmp" "$sudoers"
+tmp=$(/usr/bin/mktemp)
+trap '/usr/bin/rm -f "$tmp"' EXIT
+printf '%s ALL=(root) NOPASSWD: %s\n' "$target_user" "$helper" >"$tmp"
+/usr/bin/sudo /usr/bin/visudo -cf "$tmp"
+/usr/bin/sudo /usr/bin/install -o root -g root -m 0440 "$tmp" "$sudoers"
 
 echo "Installed $helper and a command-scoped sudo rule for $target_user."

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "hehh2001.tailscale-plus",
   "name": "Tailscale Plus",
-  "version": "1.3.3",
+  "version": "1.5.0",
   "author": "hehh2001",
   "license": "MIT",
   "description": "A full-featured, native Omarchy control panel for Tailscale.",
@@ -22,7 +22,6 @@
       "refreshIntervalSec": 30,
       "exitNodeDns": "",
       "manageExitNodeDns": false,
-      "dnsHelper": "/usr/local/libexec/omarchy-tailscale-plus-dns",
       "loginServer": "https://controlplane.tailscale.com",
       "exitNodeDnsMap": "{}"
     },
@@ -47,12 +46,6 @@
         "type": "string",
         "label": "Exit node DNS server",
         "defaultValue": ""
-      },
-      {
-        "key": "dnsHelper",
-        "type": "string",
-        "label": "Privileged DNS helper",
-        "defaultValue": "/usr/local/libexec/omarchy-tailscale-plus-dns"
       },
       {
         "key": "loginServer",

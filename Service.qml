@@ -60,6 +60,11 @@ Item {
   property string desiredExitNodeTarget: ""
   property double lastExitNodeSelfHealMs: 0
   readonly property int exitNodeSelfHealBackoffMs: 30000
+  // True once this plugin session has re-applied the custom exit-node DNS.
+  // Reset on relevant state changes so a later exit-node/DNS/settings
+  // transition can heal again. It stays true after a helper failure so a
+  // missing sudoers rule is surfaced once instead of erroring every refresh.
+  property bool _dnsSelfHealDone: false
   property string changingSetting: ""
   readonly property bool manageExitNodeDns: setting("manageExitNodeDns", false) === true
   readonly property string configuredLoginServer: Model.normalizeControlUrl(setting("loginServer", "https://controlplane.tailscale.com"))
@@ -362,6 +367,7 @@ Item {
       statusText = backendState
     }
     lastError = ""
+    Qt.callLater(function() { root.maybeHealCustomDns() })
   }
 
   function parseAccounts(raw) {
@@ -392,7 +398,10 @@ Item {
     operatorUser = parsed.operatorUser
     controlUrl = parsed.controlUrl
     exitNodeActive = parsed.exitNodeActive
-    Qt.callLater(function() { root.maybeRestoreExitNode() })
+    Qt.callLater(function() {
+      root.maybeRestoreExitNode()
+      root.maybeHealCustomDns()
+    })
   }
 
   function setBooleanPreference(key, flag, value) {
@@ -458,6 +467,39 @@ Item {
     var dns = String(resolver || "")
     startDnsHelper(dns !== "", dns)
   }
+
+  // After a shell/plugin restart Tailscale can already be using an exit node
+  // that was selected before this plugin session started. The normal helper
+  // path only runs when the user changes the exit node through this panel, so
+  // re-apply the configured resolver once the daemon reports that state.
+  function maybeHealCustomDns() {
+    if (_dnsSelfHealDone) return
+    if (!installed || !running || !exitNodeActive) return
+    if (dnsMode !== "custom" || exitNodeDns === "") return
+    if (dnsProcess.running || exitNodeProcess.running || settingProcess.running) return
+    _dnsSelfHealDone = true
+    startDnsHelper(true, exitNodeDns)
+  }
+
+  onExitNodeActiveChanged: {
+    if (!exitNodeActive) {
+      _dnsSelfHealDone = false
+    } else {
+      Qt.callLater(function() { root.maybeHealCustomDns() })
+    }
+  }
+  onDnsModeChanged: {
+    if (dnsMode === "custom") {
+      Qt.callLater(function() { root.maybeHealCustomDns() })
+    } else {
+      _dnsSelfHealDone = false
+    }
+  }
+  onExitNodeDnsChanged: {
+    _dnsSelfHealDone = false
+    Qt.callLater(function() { root.maybeHealCustomDns() })
+  }
+
   function toggleAcceptRoutes() { setBooleanPreference("acceptRoutes", "accept-routes", !acceptRoutes) }
   function toggleAllowLanAccess() { setBooleanPreference("allowLanAccess", "exit-node-allow-lan-access", !allowLanAccess) }
   function toggleShieldsUp() { setBooleanPreference("shieldsUp", "shields-up", !shieldsUp) }

@@ -159,6 +159,13 @@ and assigns the configured resolver plus the `~.` route to `tailscale0`.
 Removing the exit node reverts `tailscale0`, allowing the current local network
 resolver to take over again.
 
+If an exit node is already active when the shell or plugin restarts (for
+example after an update or reboot), the plugin re-applies the configured
+resolver automatically instead of leaving DNS on the local uplink. If the
+privileged helper is not installed or authorized, the panel reports the error
+once; install the helper and toggle the exit node, or restart the shell, to
+retry.
+
 The three DNS modes are mutually exclusive. **Tailscale DNS** enables
 `accept-dns` and reverts the custom resolver. **Exit-node custom DNS** disables
 `accept-dns` and applies the per-server resolver only while an exit node is

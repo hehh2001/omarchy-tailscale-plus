@@ -58,7 +58,7 @@ Panel {
   readonly property var preferenceRows: [
     { key: "dnsMode:tailscale", label: "Tailscale DNS", detail: "Use DNS supplied by the active tailnet", value: root.effectiveDnsMode === "tailscale", dnsChoice: true },
     { key: "dnsMode:local", label: "Local network DNS", detail: "Use local DNS whenever no custom exit-node DNS is active", value: root.effectiveDnsMode === "local", dnsChoice: true },
-    { key: "dnsMode:custom", label: "Exit-node custom DNS", detail: "Use this server's DNS only while an exit node is active", value: root.effectiveDnsMode === "custom", dnsChoice: true },
+    { key: "dnsMode:custom", label: "Exit-node custom DNS", detail: tailscale.dnsHealth === "missing" || tailscale.dnsHealth === "unknown" ? "DNS unavailable — retrying" : "Use this server's DNS only while an exit node is active", value: root.effectiveDnsMode === "custom", dnsChoice: true },
     { key: "acceptRoutes", label: "Use subnet routes", detail: "Accept routes advertised by other machines", value: tailscale.acceptRoutes },
     { key: "allowLanAccess", label: "Local network access", detail: "Keep direct LAN access while using an exit node", value: tailscale.allowLanAccess },
     { key: "shieldsUp", label: "Block incoming connections", detail: "Reject incoming Tailscale connections", value: tailscale.shieldsUp },
@@ -112,7 +112,8 @@ Panel {
 
   function exitNodeSummary() {
     var node = activeExitNode()
-    return node ? String(node.DisplayName || node.HostName || "Unknown") : "None"
+    if (node) return String(node.DisplayName || node.HostName || "Unknown") + (node.Online ? "" : " (offline)")
+    return tailscale.exitNodeActive ? "Selected exit node (unavailable)" : "None"
   }
 
   function syncExitNodeIndex() {
@@ -690,10 +691,10 @@ Panel {
           }
 
           Text {
-            visible: tailscale.actionStatus !== "" || tailscale.lastError !== ""
+            visible: tailscale.actionStatus !== "" || tailscale.lastError !== "" || tailscale.dnsError !== ""
             width: parent.width
-            text: tailscale.actionStatus !== "" ? tailscale.actionStatus : tailscale.lastError
-            color: tailscale.lastError !== "" && tailscale.actionStatus === "" ? root.urgent : root.dim
+            text: tailscale.dnsError || tailscale.actionStatus || tailscale.lastError
+            color: tailscale.dnsError !== "" || (tailscale.lastError !== "" && tailscale.actionStatus === "") ? root.urgent : root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             wrapMode: Text.WordWrap
@@ -1395,7 +1396,7 @@ Panel {
     id: peerRow
     property var peer: null
     property int rowIndex: 0
-    readonly property string peerName: peer ? String(peer.DisplayName || peer.HostName || "Unknown") : "Unknown"
+    readonly property string peerName: peer ? String(peer.DisplayName || peer.HostName || "Unknown") + (peer.ExitNode && !peer.Online ? " (offline)" : "") : "Unknown"
     readonly property string peerIp: peer && peer.TailscaleIPs && peer.TailscaleIPs.length > 0 ? String(peer.TailscaleIPs[0]) : ""
     readonly property string peerIpv6: {
       if (!peer || !peer.TailscaleIPv6 || peer.TailscaleIPv6.length === 0) return ""
@@ -1643,7 +1644,7 @@ Panel {
     readonly property bool disableOption: peer && peer.DisableExitNode === true
     readonly property bool activeExitNode: peer && peer.ExitNode === true
     readonly property bool settingExitNode: peer && tailscale.settingExitNodeId === String(peer.id || "")
-    readonly property string peerName: peer ? String(peer.DisplayName || peer.HostName || "Unknown") : "Unknown"
+    readonly property string peerName: peer ? String(peer.DisplayName || peer.HostName || "Unknown") + (peer.ExitNode && !peer.Online ? " (offline)" : "") : "Unknown"
     readonly property string actionTooltip: addMullvad ? "" : (disableOption ? "Disable exit node" : (activeExitNode ? "Selected" : "Use this exit node"))
 
     hasCursor: root.cursorActive && root.focusSection === "exitNodes" && root.exitNodeIndex === rowIndex

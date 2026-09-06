@@ -17,7 +17,7 @@ target_user="${SUDO_USER:-${USER:-}}"
 
 tmp=$(/usr/bin/mktemp)
 trap '/usr/bin/rm -f "$tmp"' EXIT
-printf '%s ALL=(root) NOPASSWD: %s\n' "$target_user" "$helper" >"$tmp"
+printf '%s ALL=(root) NOPASSWD: %s ""\n' "$target_user" "$helper" >"$tmp"
 /usr/bin/sudo /usr/bin/visudo -cf "$tmp"
 /usr/bin/sudo /usr/bin/install -o root -g root -m 0440 "$tmp" "$sudoers"
 

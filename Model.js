@@ -140,6 +140,7 @@ function isTaildropTarget(peer, selfUserId) {
 function peerFromStatus(id, peer) {
   return {
     id: capString(id),
+    StableID: capString(peer.ID),
     HostName: displayHostName(capString(peer.HostName), capString(peer.DNSName)),
     UserID: capString(peer.UserID),
     TaildropTarget: typeof peer.TaildropTarget === "number" ? peer.TaildropTarget : 0,
@@ -285,10 +286,8 @@ function parseStatus(raw) {
       var peer = rawPeers[id] || {}
       var normalized = peerFromStatus(id, peer)
       if (normalized.Mullvad) continue
-      if (normalized.Online) {
-        peers.push(normalized)
-        if (normalized.ExitNodeOption) exitNodes.push(normalized)
-      }
+      if (normalized.Online) peers.push(normalized)
+      if ((normalized.Online && normalized.ExitNodeOption) || normalized.ExitNode) exitNodes.push(normalized)
     }
 
     peers.sort(function(a, b) {
@@ -310,6 +309,7 @@ function parseStatus(raw) {
       selfIp: selfIps.length > 0 ? selfIps[0] : "",
       selfUserId: capString(self.UserID, 128),
       fileSharing: hasFileSharing(self),
+      exitNodeOnline: !!(data.ExitNodeStatus && data.ExitNodeStatus.Online),
       peers: peers,
       exitNodes: exitNodes
     }
@@ -376,7 +376,8 @@ function parsePrefs(raw) {
       operatorUser: capString(data.OperatorUser, 256),
       controlUrl: normalizeControlUrl(capString(data.ControlURL, 2048)),
       exitNodeId: capString(data.ExitNodeID, 512),
-      exitNodeActive: String(data.ExitNodeID || "") !== ""
+      exitNodeIp: capString(data.ExitNodeIP, 64),
+      exitNodeActive: String(data.ExitNodeID || data.ExitNodeIP || "") !== ""
     }
   } catch (e) {
     return { ok: false, error: "Failed to parse Tailscale preferences" }
@@ -409,14 +410,48 @@ function isValidDnsAddress(value) {
   var ipv4 = /^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$/
   if (ipv4.test(text)) return true
 
-  // IPv6: hex digits and colons only, no zone/prefix, sane length.
-  if (text.indexOf(":") === -1 || !/^[0-9a-fA-F:]+$/.test(text)) return false
-  var doubleColon = text.indexOf("::")
-  if (doubleColon !== -1 && text.indexOf("::", doubleColon + 2) !== -1) return false
-  if (doubleColon === -1 && (text.charAt(0) === ":" || text.charAt(text.length - 1) === ":")) return false
-  var groups = text.split(":")
-  var colons = groups.length - 1
-  return colons >= 2 && colons <= 7
+  return ipv6Groups(text) !== null
+
+}
+
+// Expand hex-only IPv6 for validation and comparison with resolved's canonical output.
+function ipv6Groups(text) {
+  if (!/^[0-9a-fA-F:]+$/.test(text)) return null
+  var halves = text.split("::")
+  if (halves.length > 2) return null
+  var left = halves[0] === "" ? [] : halves[0].split(":")
+  var right = halves.length === 1 || halves[1] === "" ? [] : halves[1].split(":")
+  var groups = left.concat(right)
+  for (var i = 0; i < groups.length; i++) if (!/^[0-9a-fA-F]{1,4}$/.test(groups[i])) return null
+  if (halves.length === 1 && groups.length !== 8) return null
+  if (halves.length === 2 && groups.length >= 8) return null
+  while (left.length + right.length < 8) left.push("0")
+  return left.concat(right).map(function(group) { return parseInt(group, 16) })
+}
+
+function sameDnsAddress(a, b) {
+  if (a === b) return true
+  var x = ipv6Groups(String(a || ""))
+  var y = ipv6Groups(String(b || ""))
+  return x !== null && y !== null && x.join(":") === y.join(":")
+}
+
+function resolvedDnsState(raw, resolver) {
+  if (String(raw || "").length > MAX_PREFS_INPUT) return "unknown"
+  try {
+    var links = JSON.parse(raw)
+    if (!Array.isArray(links)) return "unknown"
+    for (var i = 0; i < links.length; i++) {
+      var link = links[i]
+      if (!link || link.ifname !== "tailscale0") continue
+      var servers = link.servers || []
+      var domains = link.searchDomains || []
+      var routed = domains.some(function(d) { return d.name === "." && d.routeOnly === true })
+      return servers.length === 1 && sameDnsAddress(servers[0].addressString, resolver)
+        && routed && link.defaultRoute === true ? "ready" : "missing"
+    }
+    return "missing"
+  } catch (e) { return "unknown" }
 }
 
 function parseDnsMap(raw) {
@@ -442,6 +477,7 @@ function dnsMode(acceptDns, manageExitNodeDns) {
 
 if (typeof module !== "undefined") {
   module.exports = {
+    resolvedDnsState: resolvedDnsState,
     MAX_STATUS_INPUT: MAX_STATUS_INPUT,
     MAX_ACCOUNTS_INPUT: MAX_ACCOUNTS_INPUT,
     MAX_PREFS_INPUT: MAX_PREFS_INPUT,

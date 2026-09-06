@@ -4,7 +4,7 @@ set -euo pipefail
 # Reviewed root helper for Tailscale Plus DNS switching.
 #
 # The sudoers rule allows ONLY this exact helper with NO arguments:
-#   user ALL=(root) NOPASSWD: /usr/local/libexec/omarchy-tailscale-plus-dns
+#   user ALL=(root) NOPASSWD: /usr/local/libexec/omarchy-tailscale-plus-dns ""
 #
 # The desktop plugin sends a one-line request on stdin:
 #   on <canonical-ipv4-or-ipv6>
@@ -23,7 +23,7 @@ if [[ $# -ge 1 ]]; then
   dns_server="${2:-}"
   [[ $# -ge 3 ]] && interface="${3:-tailscale0}"
 else
-  IFS= read -r request || true
+  IFS= read -r -n 128 request || true
   case "$request" in
     on\ *)
       action="on"
@@ -52,7 +52,7 @@ fi
 valid_ipv4() {
   local addr=$1 octet
   local -a octets
-  [[ ${#addr} -le 15 ]] || return 1
+  [[ ${#addr} -le 15 && $addr =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
   IFS=. read -r -a octets <<<"$addr"
   [[ ${#octets[@]} -eq 4 ]] || return 1
   for octet in "${octets[@]}"; do

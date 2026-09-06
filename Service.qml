@@ -54,17 +54,18 @@ Item {
   property string operatorUser: ""
   property string controlUrl: ""
   property bool exitNodeActive: false
-  // Desired exit node for self-heal: if Tailscale is running but the chosen
-  // exit node disappears after a reconnect/idle, the next refresh reapplies it.
-  property string desiredExitNodeId: ""
-  property string desiredExitNodeTarget: ""
-  property double lastExitNodeSelfHealMs: 0
-  readonly property int exitNodeSelfHealBackoffMs: 30000
-  // True once this plugin session has re-applied the custom exit-node DNS.
-  // Reset on relevant state changes so a later exit-node/DNS/settings
-  // transition can heal again. It stays true after a helper failure so a
-  // missing sudoers rule is surfaced once instead of erroring every refresh.
-  property bool _dnsSelfHealDone: false
+  property string exitNodeId: ""
+  property bool exitNodeOnline: false
+  property bool _statusValid: false
+  property bool _prefsValid: false
+  property int _networkGeneration: 0
+  property string dnsError: ""
+  property string dnsHealth: ""
+  property bool _dnsOwned: false
+  property double _lastDnsAttemptMs: 0
+  property bool _dnsThenMode: false
+  readonly property bool networkActionBusy: actionProcess.running || loginProcess.running || logoutProcess.running || switchProcess.running || exitNodeProcess.running || settingProcess.running || dnsProcess.running
+  readonly property string dnsContext: _networkGeneration + "|" + controlUrl + "|" + exitNodeId + "|" + running + "|" + dnsMode + "|" + exitNodeDns
   property string changingSetting: ""
   readonly property bool manageExitNodeDns: setting("manageExitNodeDns", false) === true
   readonly property string configuredLoginServer: Model.normalizeControlUrl(setting("loginServer", "https://controlplane.tailscale.com"))
@@ -137,19 +138,22 @@ Item {
   // Arguments here are fixed literals only; never pass user-controlled strings
   // through this helper.
   function cappedPollCommand(args, maxBytes, seconds) {
-    var timeout = seconds === undefined || seconds === null ? "20" : String(seconds)
-    var limit = String(maxBytes || 262144)
-    var joined = Array.isArray(args) ? args.join(" ") : String(args || "")
-    return [root.bashBin, "-c",
-      "exec " + root.timeoutBin + " " + timeout + " " + root.tailscaleBin + " " + joined
-        + " 2> >(exec " + root.headBin + " -c 65536 >&2)"
-        + " | " + root.headBin + " -c " + limit]
+    return boundedCommand(seconds || 20, tailscaleBin, args, (maxBytes || 262144) + 1)
   }
 
-  function boundedCommand(seconds, base, args) {
-    var list = [root.timeoutBin, String(seconds === undefined || seconds === null ? 15 : seconds), base]
-    if (Array.isArray(args)) list = list.concat(args)
-    return list
+  // Positional argv preserves user input literally. Timeout owns the complete
+  // pipeline process group; both streams are bounded before QML collects them.
+  function boundedCommand(seconds, base, args, maxBytes) {
+    var list = [root.timeoutBin, "-k", "2", String(seconds || 15), root.bashBin, "-c",
+      'set -o pipefail; "$@" 2> >(/usr/bin/head -c 65536 >&2) | /usr/bin/head -c '
+        + String(maxBytes || 65537), "tailscale-plus", base]
+    return Array.isArray(args) ? list.concat(args) : list
+  }
+
+  function beginNetworkAction() {
+    _networkGeneration += 1
+    _statusValid = false
+    _prefsValid = false
   }
 
   function stopProcess(proc) {
@@ -260,6 +264,7 @@ Item {
       _statusOutput = ""
       _statusError = ""
       refreshing = true
+      statusProcess.generation = _networkGeneration
       statusProcess.command = root.cappedPollCommand(["status", "--json"], Model.MAX_STATUS_INPUT, 20)
       statusProcess.running = true
       launched = true
@@ -267,6 +272,7 @@ Item {
     if (!prefsProcess.running) {
       _prefsOutput = ""
       _prefsError = ""
+      prefsProcess.generation = _networkGeneration
       prefsProcess.command = root.cappedPollCommand(["debug", "prefs"], Model.MAX_PREFS_INPUT, 20)
       prefsProcess.running = true
       launched = true
@@ -301,6 +307,8 @@ Item {
   }
 
   function resetUnavailable(message) {
+    _statusValid = false
+    exitNodeOnline = false
     running = false
     needsLogin = false
     _desired = -1
@@ -338,6 +346,7 @@ Item {
       return
     }
 
+    _statusValid = true
     backendState = parsed.backendState
     running = parsed.running
     // Reality caught up to the pending toggle — stop overriding.
@@ -350,6 +359,7 @@ Item {
     selfIp = parsed.selfIp
     selfUserId = parsed.selfUserId
     fileSharing = parsed.fileSharing
+    exitNodeOnline = parsed.exitNodeOnline
     peers = parsed.running ? parsed.peers : []
     tailnetExitNodes = parsed.running ? parsed.exitNodes : []
     exitNodes = parsed.running ? tailnetExitNodes.concat(mullvadRegions) : []
@@ -367,7 +377,7 @@ Item {
       statusText = backendState
     }
     lastError = ""
-    Qt.callLater(function() { root.maybeHealCustomDns() })
+    Qt.callLater(function() { root.checkCustomDns() })
   }
 
   function parseAccounts(raw) {
@@ -381,9 +391,11 @@ Item {
   function parsePrefs(raw) {
     var parsed = Model.parsePrefs(raw)
     if (!parsed.ok) {
+      _prefsValid = false
       lastError = parsed.error || "Could not read Tailscale settings"
       return
     }
+    _prefsValid = true
     acceptDns = parsed.acceptDns
     acceptRoutes = parsed.acceptRoutes
     allowLanAccess = parsed.allowLanAccess
@@ -397,15 +409,14 @@ Item {
     hostname = parsed.hostname
     operatorUser = parsed.operatorUser
     controlUrl = parsed.controlUrl
+    exitNodeId = parsed.exitNodeId || parsed.exitNodeIp
     exitNodeActive = parsed.exitNodeActive
-    Qt.callLater(function() {
-      root.maybeRestoreExitNode()
-      root.maybeHealCustomDns()
-    })
+    Qt.callLater(function() { root.checkCustomDns() })
   }
 
   function setBooleanPreference(key, flag, value) {
-    if (!installed || settingProcess.running) return
+    if (!installed || networkActionBusy) return
+    beginNetworkAction()
     changingSetting = String(key || "")
     _settingOutput = ""
     _settingError = ""
@@ -416,7 +427,7 @@ Item {
   function setDnsMode(mode, resolver) {
     var next = String(mode || "")
     var requestedResolver = resolver === undefined || resolver === null ? String(exitNodeDns || "") : String(resolver || "").trim()
-    if (!installed || settingProcess.running || dnsProcess.running) return
+    if (!installed || networkActionBusy) return
     if (next !== "tailscale" && next !== "custom" && next !== "local") return
     if (next === "custom" && requestedResolver === "") {
       lastError = "Configure an exit-node DNS server before enabling custom DNS"
@@ -430,12 +441,23 @@ Item {
       actionStatusTimer.restart()
       return
     }
+    beginNetworkAction()
     changingSetting = "dnsMode"
     _pendingDnsMode = next
     _pendingDnsResolver = requestedResolver
     _settingOutput = ""
     _settingError = ""
-    settingProcess.command = root.boundedCommand(15, root.tailscaleBin, ["set", "--accept-dns=" + (next === "tailscale" ? "true" : "false")])
+    // Release our override before Tailscale installs its DNS, never after it.
+    if (next === "tailscale" && (dnsMode === "custom" || _dnsOwned)) {
+      _dnsThenMode = true
+      startDnsHelper(false)
+    } else {
+      finishDnsModeChange()
+    }
+  }
+
+  function finishDnsModeChange() {
+    settingProcess.command = root.boundedCommand(15, root.tailscaleBin, ["set", "--accept-dns=" + (_pendingDnsMode === "tailscale" ? "true" : "false")])
     settingProcess.running = true
   }
 
@@ -444,6 +466,9 @@ Item {
     var dns = resolver === undefined || resolver === null ? String(exitNodeDns || "") : String(resolver || "")
     _dnsOutput = ""
     _dnsError = ""
+    _lastDnsAttemptMs = Date.now()
+    dnsProcess.enabling = enable
+    dnsProcess.context = dnsContext
     if (enable) {
       if (dns === "") return
       if (!Model.isValidDnsAddress(dns)) {
@@ -463,41 +488,32 @@ Item {
   }
 
   function applyCustomDns(resolver) {
+    if (networkActionBusy || !_prefsValid || !_statusValid) return
     if (dnsMode !== "custom" || !exitNodeActive) return
     var dns = String(resolver || "")
     startDnsHelper(dns !== "", dns)
   }
 
-  // After a shell/plugin restart Tailscale can already be using an exit node
-  // that was selected before this plugin session started. The normal helper
-  // path only runs when the user changes the exit node through this panel, so
-  // re-apply the configured resolver once the daemon reports that state.
-  function maybeHealCustomDns() {
-    if (_dnsSelfHealDone) return
-    if (!installed || !running || !exitNodeActive) return
-    if (dnsMode !== "custom" || exitNodeDns === "") return
-    if (dnsProcess.running || exitNodeProcess.running || settingProcess.running) return
-    _dnsSelfHealDone = true
-    startDnsHelper(true, exitNodeDns)
+  // Poll resolved's real per-link state. A saved exit-node preference survives
+  // reconnects; resolved's runtime DNS and ~. domain do not necessarily survive.
+  function checkCustomDns() {
+    if (!installed || !_statusValid || !_prefsValid || networkActionBusy || prefsProcess.running || statusProcess.running || dnsStatusProcess.running) return
+    if (dnsMode !== "custom") return
+    if (!running || !exitNodeActive) {
+      if (_dnsOwned && Date.now() - _lastDnsAttemptMs >= 30000) startDnsHelper(false)
+      return
+    }
+    if (!Model.isValidDnsAddress(exitNodeDns)) return
+    dnsStatusProcess.context = dnsContext
+    dnsStatusProcess.command = boundedCommand(10, resolvectlBin, ["--json=short", "status", "tailscale0"], Model.MAX_PREFS_INPUT + 1)
+    dnsStatusProcess.running = true
   }
 
-  onExitNodeActiveChanged: {
-    if (!exitNodeActive) {
-      _dnsSelfHealDone = false
-    } else {
-      Qt.callLater(function() { root.maybeHealCustomDns() })
-    }
-  }
-  onDnsModeChanged: {
-    if (dnsMode === "custom") {
-      Qt.callLater(function() { root.maybeHealCustomDns() })
-    } else {
-      _dnsSelfHealDone = false
-    }
-  }
-  onExitNodeDnsChanged: {
-    _dnsSelfHealDone = false
-    Qt.callLater(function() { root.maybeHealCustomDns() })
+  onDnsContextChanged: {
+    dnsHealth = ""
+    dnsError = ""
+    _lastDnsAttemptMs = 0
+    Qt.callLater(function() { root.checkCustomDns() })
   }
 
   function toggleAcceptRoutes() { setBooleanPreference("acceptRoutes", "accept-routes", !acceptRoutes) }
@@ -546,6 +562,7 @@ Item {
       authorizeTailscaleOperator()
       return false
     }
+    beginNetworkAction()
     _loginOutput = ""
     _loginError = ""
     _loginInProgress = true
@@ -564,14 +581,8 @@ Item {
   }
 
   function loginToServer(value) {
-    if (!installed || loginProcess.running || logoutProcess.running) return false
+    if (!installed || networkActionBusy) return false
     return startLoginForServer(value)
-  }
-
-  function clearPendingExitNodeState() {
-    desiredExitNodeId = ""
-    desiredExitNodeTarget = ""
-    lastExitNodeSelfHealMs = 0
   }
 
   function cancelPendingLogin() {
@@ -590,7 +601,7 @@ Item {
   function switchTailnet(value) {
     var normalized = Model.normalizeControlUrlInput(value)
     if (!installed) return false
-    if (logoutProcess.running) return false
+    if (actionProcess.running || operatorProcess.running || logoutProcess.running || switchProcess.running || exitNodeProcess.running || settingProcess.running || dnsProcess.running) return false
     // If the user is switching again while a previous login is still waiting
     // for browser auth, cancel that login first so the click is not ignored.
     if (loginProcess.running) cancelPendingLogin()
@@ -601,9 +612,9 @@ Item {
       return false
     }
 
-    clearPendingExitNodeState()
     _pendingSwitchServer = normalized
     _pendingSwitchActive = true
+    beginNetworkAction()
     _logoutOutput = ""
     _logoutError = ""
 
@@ -639,7 +650,7 @@ Item {
   }
 
   function toggleTailscale() {
-    if (!installed) return
+    if (!installed || networkActionBusy) return
     if (active) down()
     else loginOrUp()
   }
@@ -660,6 +671,7 @@ Item {
       openAuthUrlFrom(plan.authUrl, true)
       return
     }
+    beginNetworkAction()
     _loginOutput = ""
     _loginError = ""
     if (needsLogin) actionStatus = "Starting Tailscale login…"
@@ -675,12 +687,13 @@ Item {
 
   function switchAccount(id) {
     var accountId = String(id || "")
-    if (!installed || accountId === "" || accountId === selectedAccountId || switchProcess.running) return
+    if (!installed || accountId === "" || accountId === selectedAccountId || networkActionBusy) return
     if (needsLogin || controlUrl === "") {
       actionStatus = "Saved connection needs authentication…"
       loginToServer(configuredLoginServer)
       return
     }
+    beginNetworkAction()
     _switchOutput = ""
     _switchError = ""
     switchingAccountId = accountId
@@ -698,51 +711,19 @@ Item {
   }
 
   function setExitNode(peer) {
-    if (!installed || !running || !peer || exitNodeProcess.running) return
+    if (!installed || !running || !peer || networkActionBusy) return
     var target = exitNodeTarget(peer)
     if (target === "" || peer.ExitNode === true) return
-    desiredExitNodeId = String(peer.id || target)
-    desiredExitNodeTarget = target
-    lastExitNodeSelfHealMs = Date.now()
-    changeExitNode(target, true, desiredExitNodeId)
+    changeExitNode(target, true, String(peer.id || target))
   }
 
   function clearExitNode() {
-    if (!installed || !running || exitNodeProcess.running || !exitNodeActive) return
-    desiredExitNodeId = ""
-    desiredExitNodeTarget = ""
-    lastExitNodeSelfHealMs = 0
+    if (!installed || !running || networkActionBusy || !exitNodeActive) return
     changeExitNode("", false, "exit:none")
   }
 
-  function findExitNodePeer(id) {
-    var wanted = String(id || "")
-    if (wanted === "") return null
-    var pools = [tailnetExitNodes, mullvadRegions, peers]
-    for (var p = 0; p < pools.length; p++) {
-      var list = Array.isArray(pools[p]) ? pools[p] : []
-      for (var i = 0; i < list.length; i++) {
-        var item = list[i] || {}
-        if (String(item.id || "") === wanted) return item
-      }
-    }
-    return null
-  }
-
-  // After an idle timeout/reconnect Tailscale may come back without the exit
-  // node route. Reapply the user's last selection on a later refresh (throttled).
-  function maybeRestoreExitNode() {
-    if (!installed || !running || desiredExitNodeId === "") return
-    if (exitNodeActive || exitNodeProcess.running || settingProcess.running) return
-    var now = Date.now()
-    if (now - lastExitNodeSelfHealMs < exitNodeSelfHealBackoffMs) return
-    lastExitNodeSelfHealMs = now
-    var peer = findExitNodePeer(desiredExitNodeId)
-    var target = peer ? exitNodeTarget(peer) : desiredExitNodeTarget
-    if (target !== "") changeExitNode(target, true, desiredExitNodeId)
-  }
-
   function changeExitNode(target, enable, id) {
+    beginNetworkAction()
     _exitNodeOutput = ""
     _exitNodeError = ""
     settingExitNodeId = String(id || "")
@@ -767,6 +748,7 @@ Item {
 
   function runAction(command, label) {
     if (actionProcess.running) return
+    beginNetworkAction()
     _actionOutput = ""
     _actionError = ""
     actionStatus = label || ""
@@ -796,6 +778,13 @@ Item {
     if (isError) _loginError += text + "\n"
     else _loginOutput += text + "\n"
     if (_loginInProgress && !_loginUrlOpened) openAuthUrlFrom(text, false)
+  }
+
+  Component.onDestruction: {
+    var processes = [statusProcess, prefsProcess, accountsProcess, mullvadExitNodesProcess,
+      actionProcess, loginProcess, logoutProcess, switchProcess, exitNodeProcess,
+      settingProcess, dnsStatusProcess, dnsProcess, operatorProcess]
+    for (var i = 0; i < processes.length; i++) root.stopProcess(processes[i])
   }
 
   Timer {
@@ -890,11 +879,13 @@ Item {
 
   Process {
     id: statusProcess
+    property int generation: 0
     running: false
     command: []
     stdout: StdioCollector { id: statusStdout; waitForEnd: true; onStreamFinished: root._statusOutput = text }
     stderr: StdioCollector { id: statusStderr; waitForEnd: true; onStreamFinished: root._statusError = text }
     onExited: function(exitCode) {
+      if (generation !== root._networkGeneration) return
       root.refreshing = false
       var stdout = String(statusStdout.text || root._statusOutput || "")
       var stderr = String(statusStderr.text || root._statusError || "")
@@ -908,15 +899,20 @@ Item {
 
   Process {
     id: prefsProcess
+    property int generation: 0
     running: false
     command: []
     stdout: StdioCollector { id: prefsStdout; waitForEnd: true; onStreamFinished: root._prefsOutput = text }
     stderr: StdioCollector { id: prefsStderr; waitForEnd: true; onStreamFinished: root._prefsError = text }
     onExited: function(exitCode) {
+      if (generation !== root._networkGeneration) return
       var stdout = String(prefsStdout.text || root._prefsOutput || "")
       var stderr = String(prefsStderr.text || root._prefsError || "")
       if (exitCode === 0) root.parsePrefs(stdout)
-      else root.lastError = elideStatus(stderr || "Could not read Tailscale settings")
+      else {
+        root._prefsValid = false
+        root.lastError = elideStatus(stderr || "Could not read Tailscale settings")
+      }
     }
   }
 
@@ -1079,7 +1075,7 @@ Item {
       } else {
         root.lastError = ""
         root.actionStatus = ""
-        if (root.dnsMode === "custom") root.startDnsHelper(root._pendingExitNodeEnable, root.exitNodeDns)
+        if (root.dnsMode === "custom" && !root._pendingExitNodeEnable) root.startDnsHelper(false)
       }
       root.settingExitNodeId = ""
       delayedRefresh.restart()
@@ -1104,7 +1100,7 @@ Item {
         root.lastError = ""
         if (requestedDnsMode !== "") {
           root.dnsModeAccepted(requestedDnsMode)
-          root.startDnsHelper(requestedDnsMode === "custom" && root.exitNodeActive, root._pendingDnsResolver)
+          if (requestedDnsMode === "local" && root._dnsOwned) root.startDnsHelper(false)
         }
       }
       root._pendingDnsMode = ""
@@ -1115,10 +1111,30 @@ Item {
   }
 
   Process {
+    id: dnsStatusProcess
+    property string context: ""
+    stdout: StdioCollector { id: dnsStatusStdout; waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(exitCode) {
+      if (context !== root.dnsContext || !root._prefsValid || !root._statusValid || root.networkActionBusy || prefsProcess.running || statusProcess.running) return
+      var state = exitCode === 0 ? Model.resolvedDnsState(dnsStatusStdout.text, root.exitNodeDns) : "unknown"
+      root.dnsHealth = state
+      if (state === "ready") {
+        root.dnsError = ""
+        root._dnsOwned = true
+      } else if (Date.now() - root._lastDnsAttemptMs >= 30000) {
+        root.startDnsHelper(true, root.exitNodeDns)
+      }
+    }
+  }
+
+  Process {
     id: dnsProcess
     running: false
     command: []
     property string request: ""
+    property bool enabling: false
+    property string context: ""
     stdinEnabled: true
     onStarted: {
       write(request)
@@ -1130,11 +1146,23 @@ Item {
       var stdout = String(dnsStdout.text || root._dnsOutput || "")
       var stderr = String(dnsStderr.text || root._dnsError || "")
       if (exitCode !== 0) {
-        root.lastError = elideStatus(stderr || stdout || "Exit-node DNS helper is not installed or authorized")
-        root.actionStatus = root.lastError
+        root.dnsError = elideStatus(stderr || stdout || "Exit-node DNS helper is not installed or authorized")
+        root.actionStatus = root.dnsError
         actionStatusTimer.restart()
       } else {
-        root.lastError = ""
+        root.dnsError = ""
+        root._dnsOwned = enabling
+        root.dnsHealth = ""
+      }
+      if (context !== root.dnsContext) root._lastDnsAttemptMs = 0
+      if (root._dnsThenMode) {
+        root._dnsThenMode = false
+        if (exitCode === 0) root.finishDnsModeChange()
+        else {
+          root._pendingDnsMode = ""
+          root._pendingDnsResolver = ""
+          root.changingSetting = ""
+        }
       }
       delayedRefresh.restart()
     }

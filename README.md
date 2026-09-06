@@ -142,8 +142,8 @@ If a saved profile has expired or the client is logged out, selecting that
 connection starts a fresh login against the configured login server instead of
 repeatedly attempting an invalid profile switch.
 
-The panel passes arguments directly to the Tailscale process without invoking
-a shell. Login URLs must use HTTP or HTTPS, and DNS values must pass address
+The panel preserves user-controlled arguments as positional arguments through
+a fixed, bounded process wrapper; they are never interpolated into shell code. Login URLs must use HTTP or HTTPS, and DNS values must pass address
 validation. Authentication keys and identity-provider secrets are never
 stored in plugin settings.
 
@@ -159,12 +159,26 @@ and assigns the configured resolver plus the `~.` route to `tailscale0`.
 Removing the exit node reverts `tailscale0`, allowing the current local network
 resolver to take over again.
 
-If an exit node is already active when the shell or plugin restarts (for
-example after an update or reboot), the plugin re-applies the configured
-resolver automatically instead of leaving DNS on the local uplink. If the
-privileged helper is not installed or authorized, the panel reports the error
-once; install the helper and toggle the exit node, or restart the shell, to
-retry.
+The plugin reads Tailscale's persisted exit-node preference on every refresh,
+including after a shell restart. Tailscale owns that preference and the tunnel's
+routes: the plugin does not maintain a competing selection or re-enable an exit
+node cleared by the CLI or another client. Account switches therefore cannot
+reapply a previous account's gateway. Selected offline nodes remain visible as
+**offline**, and an unavailable selected node is not displayed as **None**.
+
+While custom DNS is enabled, each completed refresh checks systemd-resolved's
+actual `tailscale0` resolver, `~.` routing domain, and default-route flag using
+`resolvectl --json=short status`. Missing settings are reapplied through the
+fixed helper, including after repeated network changes or resume events.
+Failures retry at most once every 30 seconds for an unchanged configuration;
+the DNS error remains visible until a successful repair or verification.
+Recovery timing follows the configured refresh interval (30 seconds by default).
+This requires a systemd-resolved version supporting JSON status output, as
+provided by current Omarchy. A failed inspection is retried with the same bound.
+
+The panel reports selection and online state, not an end-to-end connectivity
+guarantee. It does not reset a healthy tunnel, implement a separate firewall,
+or fall back to a local internet route when a gateway becomes unreachable.
 
 The three DNS modes are mutually exclusive. **Tailscale DNS** enables
 `accept-dns` and reverts the custom resolver. **Exit-node custom DNS** disables
@@ -192,7 +206,9 @@ The installer creates:
 - `/usr/local/libexec/omarchy-tailscale-plus-dns`, owned by root and mode `0755`.
 - `/etc/sudoers.d/omarchy-tailscale-plus-dns`, owned by root and mode `0440`.
 
-The sudo rule permits only the fixed helper path with **no arguments**. The
+The sudo rule explicitly uses `NOPASSWD: /usr/local/libexec/omarchy-tailscale-plus-dns ""`
+to permit the fixed helper path with **no arguments**. Omitting `""` in sudoers
+would allow arbitrary arguments. The
 plugin sends a one-line `on <resolver>` / `off` request over stdin. The helper
 accepts only the `tailscale0` interface, validates that the resolver is a
 canonical IPv4 or IPv6 address with a strict length cap, and performs fixed
@@ -207,6 +223,11 @@ error instead of silently changing system configuration.
 ```bash
 omarchy plugin update hehh2001.tailscale-plus
 ```
+
+When upgrading to **1.5.2**, run `./scripts/install-dns-helper` again if you use
+custom DNS. This updates the reviewed helper and installs the explicit
+no-arguments sudoers restriction. Standard Omarchy plugin updates never run
+this privileged installer automatically.
 
 Review the displayed diff before accepting an update. Marketplace verification
 is bound to a specific commit; a newer repository HEAD may not yet have been
@@ -319,3 +340,18 @@ Tailscale is a trademark of Tailscale Inc.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Development checks
+
+```bash
+omarchy plugin validate .
+node tests/model.test.js
+node tests/recovery.test.js
+bash -n scripts/omarchy-tailscale-plus-dns scripts/install-dns-helper scripts/uninstall-dns-helper
+qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml TailscaleIcon.qml
+```
+
+The recovery tests simulate repeated DNS loss, transient helper failure,
+configuration changes during a poll, offline selected gateways, DNS handoff,
+IPv6 address validation, output limits, literal argv handling, and timeouts.
+They do not disconnect the desktop or suspend the machine.

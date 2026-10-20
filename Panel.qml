@@ -60,14 +60,7 @@ Panel {
     { key: "dnsMode:local", label: "Local network DNS", detail: "Use local DNS whenever no custom exit-node DNS is active", value: root.effectiveDnsMode === "local", dnsChoice: true },
     { key: "dnsMode:custom", label: "Exit-node custom DNS", detail: tailscale.dnsHealth === "missing" || tailscale.dnsHealth === "unknown" ? "DNS unavailable — retrying" : "Use this server's DNS only while an exit node is active", value: root.effectiveDnsMode === "custom", dnsChoice: true },
     { key: "acceptRoutes", label: "Use subnet routes", detail: "Accept routes advertised by other machines", value: tailscale.acceptRoutes },
-    { key: "allowLanAccess", label: "Local network access", detail: "Keep direct LAN access while using an exit node", value: tailscale.allowLanAccess },
-    { key: "shieldsUp", label: "Block incoming connections", detail: "Reject incoming Tailscale connections", value: tailscale.shieldsUp },
-    { key: "runSsh", label: "Tailscale SSH", detail: "Allow SSH according to tailnet policy", value: tailscale.runSsh },
-    { key: "runWebClient", label: "Web management", detail: "Expose the Tailscale web UI on port 5252", value: tailscale.runWebClient },
-    { key: "advertiseExitNode", label: "Offer as exit node", detail: "Advertise this machine as an internet gateway", value: tailscale.advertiseExitNode },
-    { key: "updateCheck", label: "Update notifications", detail: "Check for available Tailscale updates", value: tailscale.updateCheck },
-    { key: "autoUpdate", label: "Automatic updates", detail: "Install Tailscale updates automatically", value: tailscale.autoUpdate },
-    { key: "reportPosture", label: "Device posture", detail: "Allow posture collection by the control plane", value: tailscale.reportPosture }
+    { key: "allowLanAccess", label: "Local network access", detail: "Keep direct LAN access while using an exit node", value: tailscale.allowLanAccess }
   ]
   readonly property var filteredMullvadRegions: filteredMullvadRegionNodes()
   // Only claim the header cursor when the switch is actually on screen —
@@ -307,13 +300,6 @@ Panel {
     }
     else if (key === "acceptRoutes") tailscale.toggleAcceptRoutes()
     else if (key === "allowLanAccess") tailscale.toggleAllowLanAccess()
-    else if (key === "shieldsUp") tailscale.toggleShieldsUp()
-    else if (key === "runSsh") tailscale.toggleRunSsh()
-    else if (key === "runWebClient") tailscale.toggleRunWebClient()
-    else if (key === "advertiseExitNode") tailscale.toggleAdvertiseExitNode()
-    else if (key === "updateCheck") tailscale.toggleUpdateCheck()
-    else if (key === "autoUpdate") tailscale.toggleAutoUpdate()
-    else if (key === "reportPosture") tailscale.toggleReportPosture()
   }
 
   function ensureCursor() {

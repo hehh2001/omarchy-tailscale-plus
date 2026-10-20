@@ -16,9 +16,7 @@ the settings people commonly need from the official Tailscale clients.
   compact dropdown; choose **None** to disable exit-node routing.
 - Show enabled controls with Omarchy's highlighted state and disabled controls
   with the standard dimmed state.
-- Toggle Tailscale DNS, advertised subnet routes, exit-node LAN access,
-  shields-up mode, Tailscale SSH, web management, exit-node advertising,
-  update checks, automatic updates, and posture reporting.
+- Toggle DNS mode, advertised subnet routes, and exit-node LAN access.
 - Browse peers, copy names and IPv4/IPv6 addresses, and send files with
   Taildrop.
 - Navigate by mouse or keyboard.
@@ -26,6 +24,11 @@ the settings people commonly need from the official Tailscale clients.
   server and switch it together with an exit node.
 - Choose exactly one DNS mode: Tailnet-provided DNS, exit-node custom DNS, or
   local network DNS.
+
+The panel intentionally exposes only the controls used day to day. Shields-up,
+Tailscale SSH, web management, exit-node advertising, update checks, automatic
+updates, and posture reporting are still handled by `tailscale set` if you need
+them, but they are not part of the panel.
 
 ## Requirements
 

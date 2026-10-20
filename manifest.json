@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "hehh2001.tailscale-plus",
   "name": "Tailscale Plus",
-  "version": "1.5.2",
+  "version": "1.6.0",
   "author": "hehh2001",
   "license": "MIT",
   "description": "A full-featured, native Omarchy control panel for Tailscale.",
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Tailscale Plus",
-    "description": "Control connections, exit nodes, DNS, routes, privacy, sharing, updates, and peers.",
+    "description": "Control connections, exit nodes, DNS, routes, sharing, and peers.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",
